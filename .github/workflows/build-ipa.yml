@@ -14,8 +14,7 @@ concurrency:
 
 jobs:
   build:
-    # madeira-bcd: runs only in the owner's repository; a fork's run is skipped.
-    if: github.repository == 'bahacan16/madeira-bcd'
+    # Fork-friendly build: this workflow can run in this repository.
     runs-on: macos-15
     # contents: write only so the token can see DRAFT releases, which is where
     # the Metal Shader Converter installer is kept (drafts are not public).
@@ -1488,32 +1487,19 @@ jobs:
           cp -R build-out/Madeira.xcarchive/Products/Applications/Madeira.app build-out/Payload/
           cd build-out && ditto -c -k --keepParent Payload Madeira-0.1.${{ github.run_number }}-unsigned.ipa
 
+      # Fork build: keep the unsigned IPA as a downloadable GitHub Actions artifact.
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-${{ github.run_number }}-unsigned
+          path: build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa
+          if-no-files-found: error
+
       # Over-the-air install: sign with the owner's certificate (kept in the
       # owner's PRIVATE Backblaze B2 bucket, never in the repository) and put the
       # signed IPA plus kurulum.html (7-day pre-signed links) in the same bucket.
       # Does nothing until the secrets listed in tools/sign-and-publish-ota.sh
       # exist; never fails the build.
-      - name: Sign for OTA install (private bucket)
-        id: ota
-        continue-on-error: true
-        env:
-          B2_KEY_ID: ${{ secrets.B2_KEY_ID }}
-          B2_APP_KEY: ${{ secrets.B2_APP_KEY }}
-          B2_S3_ENDPOINT: ${{ secrets.B2_S3_ENDPOINT }}
-          B2_SIGN_BUCKET: ${{ secrets.B2_SIGN_BUCKET }}
-          SIGN_P12_PASSWORD: ${{ secrets.SIGN_P12_PASSWORD }}
-          OTA_MAIL_USER: ${{ secrets.OTA_MAIL_USER }}
-          OTA_MAIL_APP_PASSWORD: ${{ secrets.OTA_MAIL_APP_PASSWORD }}
-          OTA_MAIL_TO: ${{ secrets.OTA_MAIL_TO }}
-          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
-          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          R2_BUCKET: ${{ secrets.R2_BUCKET }}
-        run: bash tools/sign-and-publish-ota.sh build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa ${{ github.run_number }}
-
-      # Update packs (tools/pack-index.py): record this build's native ABI in
-      # the packs index -- metadata only, the IPA itself is not published --
-      # so the app can tell which build a newer pack needs.
       - name: Record the app build in the update-pack index
         continue-on-error: true
         env:
@@ -1527,14 +1513,6 @@ jobs:
       # anyone; the only copy of a build is the signed IPA in the owner's
       # private R2 bucket (the OTA step above). If that step did not succeed,
       # the build fails here instead of keeping the IPA somewhere public.
-      - name: Check the IPA reached the private bucket
-        if: steps.ota.outcome != 'success'
-        run: |
-          echo "::error::OTA signing/upload did not succeed: this build's IPA was not kept anywhere (no GitHub artifact by design)"
-          exit 1
-
-      # Full logs as an artifact -- the annotations above are truncated, and
-      # digging them out of the raw job log is painful.
       - uses: actions/upload-artifact@v4
         if: always()
         with:
