@@ -352,7 +352,8 @@ jobs:
 
       # GTA ARM64EC bootstrap diagnostic: compare TEB+0x58 and TLS bitmap in
       # the main process versus the iOS pseudo-process child before changing
-      # TLS initialization order.
+      # TLS initialization order. The same run also carries the full xtajit64
+      # x18+0x58 census and the GTA-specific Steam identity cleanup.
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
