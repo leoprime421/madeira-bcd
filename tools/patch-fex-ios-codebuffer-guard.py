@@ -7,12 +7,15 @@ Trying to protect an address aligned only to 4 KiB fails with
 ERROR_INVALID_PARAMETER (87).
 
 For FEX_IOS_HOST:
-  * reserve/protect the final 16 KiB host page,
+  * reserve the final 16 KiB host page logically,
+  * do NOT call Win32 VirtualProtect on the JIT-pool carve (Wine reports that
+    pool alias as MEM_FREE, so VirtualProtect returns ERROR_INVALID_PARAMETER),
   * report only bytes before that host page as usable,
   * exclude the same host page in IsAddressInCodeBuffer,
-  * emit a capped [ios-guard] success trace so CI/runtime can verify the fix.
+  * emit a capped [ios-guard] trace so CI/runtime can verify the iOS path.
 
-Other hosts keep FEX's original 4 KiB behavior.
+The guard remains enforced by FEX's UsableSize / buffer-full checks. Other
+hosts keep FEX's original physically protected 4 KiB guard page.
 """
 from pathlib import Path
 import sys
@@ -55,26 +58,29 @@ guard_old = """    // Protect the last page of the allocated buffer to trigger S
 """
 guard_new = """    // Protect the last page of the allocated buffer to trigger SIGSEGV on write access.
 #ifdef FEX_IOS_HOST
-    // iOS/arm64 VM protection granularity is 16 KiB, while FEX_PAGE_SIZE is
-    // 4 KiB. Protecting end-0x1000 therefore used an address such as
-    // ...fb000 and VirtualProtect returned ERROR_INVALID_PARAMETER (87).
+    // Madeira's executable CodeBuffers are carved from the app-owned dual-map
+    // JIT pool. Wine's Win32 VM bookkeeping does not own that RX alias:
+    // VirtualQuery reports MEM_FREE for it, so VirtualProtect(PAGE_NOACCESS)
+    // returns ERROR_INVALID_PARAMETER even when address and size are 16 KiB
+    // aligned. Do not send this pool carve through Win32 VirtualProtect.
+    //
+    // Keep a full 16 KiB logical guard instead. UsableSize() and the normal
+    // buffer-full checks stop emission before this page.
     constexpr size_t GuardPageSize = 0x4000;
+    uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, GuardPageSize);
+    static std::atomic<int> IosGuardLogCount {0};
+    if (IosGuardLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
+      LogMan::Msg::EFmt("[ios-guard] logical-only code buffer={} size=0x{:x} guard={}+0x{:x} reason=jit-pool-not-win32-owned",
+                        fmt::ptr(Ptr), Size, fmt::ptr(reinterpret_cast<void*>(LastPageAddr)), GuardPageSize);
+    }
 #else
     constexpr size_t GuardPageSize = FEXCore::Utils::FEX_PAGE_SIZE;
-#endif
     uintptr_t LastPageAddr = AlignDown(reinterpret_cast<uintptr_t>(Ptr) + Size - 1, GuardPageSize);
     if (!FEXCore::Allocator::VirtualProtect(reinterpret_cast<void*>(LastPageAddr), GuardPageSize,
                                             FEXCore::Allocator::ProtectOptions::None)) {
       LogMan::Msg::EFmt("Failed to mprotect last page of code buffer.");
-#ifdef FEX_IOS_HOST
-    } else {
-      static std::atomic<int> IosGuardLogCount {0};
-      if (IosGuardLogCount.fetch_add(1, std::memory_order_relaxed) < 8) {
-        LogMan::Msg::EFmt("[ios-guard] code buffer={} size=0x{:x} guard={}+0x{:x}",
-                          fmt::ptr(Ptr), Size, fmt::ptr(reinterpret_cast<void*>(LastPageAddr)), GuardPageSize);
-      }
-#endif
     }
+#endif
 """
 if guard_new not in cs:
     if guard_old not in cs:
