@@ -23,7 +23,7 @@ anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID
 if anchor not in s:
     raise SystemExit("steam-init trace: MODULE_InitDLL anchor not found")
 
-prefix = """/* madeira-bcd steam-init trace rev=3 */"
+prefix = """/* madeira-bcd steam-init trace rev=3 */
 #ifdef __arm64ec__
 static int steam_init_trace_depth;
 static unsigned int steam_init_trace_ops;
