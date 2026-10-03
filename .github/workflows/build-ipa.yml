@@ -1153,6 +1153,22 @@ jobs:
         continue-on-error: true
         run: bash tools/build-wine-extra-dlls.sh "$GITHUB_WORKSPACE/wine/build-native"
 
+      # loader.c is PE-side code. Patching the source alone is not enough because
+      # the repository normally ships a prebuilt arm64ec ntdll.dll. Rebuild it
+      # here so diagnostics such as [steam-init] are actually present in the IPA.
+      - name: Rebuild ARM64EC ntdll with steam init trace
+        shell: bash
+        run: |
+          # A restored wine/build-arm64ec cache can contain loader.o newer than
+          # the freshly patched source. Touch the source so make cannot reuse it.
+          touch wine/dlls/ntdll/loader.c
+          bash build/wine-pe/build-ntdll.sh
+          if ! strings app/Madeira/arm64ec-windows/ntdll.dll | grep -Fq '[steam-init]'; then
+            echo "::error::rebuilt ntdll.dll does not contain [steam-init] -- refusing to spend time archiving an uninstrumented IPA"
+            exit 1
+          fi
+          echo "::notice::ARM64EC ntdll contains the steam init tracer"
+
       - name: Save wine arm64ec build
         if: steps.wineeccache.outputs.cache-hit != 'true' && hashFiles('wine/build-arm64ec/dlls/msvcr80/arm64ec-windows/msvcr80.dll') != ''
         continue-on-error: true
