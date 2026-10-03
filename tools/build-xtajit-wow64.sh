@@ -24,7 +24,8 @@ git -C FEX diff --name-only | while read -r f; do git -C FEX checkout -- "$f"; d
 python3 "$R/tools/patch-fex-ios-cpuid-index.py" "$R/FEX/$CPUIDF"
 python3 "$R/tools/patch-fex-ios-teb-tsd.py" "$R/FEX/Source/Windows/Common/Priv.h"
 python3 "$R/tools/patch-fex-virtualprotect-result.py" "$R/FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h"
-restore() { git -C "$R/FEX" checkout -- "$CPUIDF" Source/Windows/Common/Priv.h FEXCore/include/FEXCore/Utils/AllocatorHooks.h; }
+python3 "$R/tools/patch-fex-ios-codebuffer-guard.py" "$R/FEX"
+restore() { git -C "$R/FEX" checkout -- "$CPUIDF" Source/Windows/Common/Priv.h FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp; }
 trap restore EXIT
 
 cmake -S "$R/FEX" -B "$B" -G Ninja -DCMAKE_BUILD_TYPE=Release \

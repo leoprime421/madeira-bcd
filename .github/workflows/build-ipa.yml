@@ -679,7 +679,11 @@ jobs:
             echo "::error::xtajit64.dll does not contain the VirtualProtect fix/tracer"
             exit 1
           fi
-          echo "::notice::xtajit64.dll contains the VirtualProtect fix/tracer"
+          if ! grep -aFq '[ios-guard]' app/Madeira/arm64ec-windows/xtajit64.dll; then
+            echo "::error::xtajit64.dll does not contain the iOS 16 KiB CodeBuffer guard fix"
+            exit 1
+          fi
+          echo "::notice::xtajit64.dll contains VirtualProtect + iOS 16 KiB guard fixes"
 
       - name: Save FEX ARM64EC build
         if: steps.fexeccache.outputs.cache-hit != 'true' && hashFiles('FEX/build-arm64ec/Bin/libarm64ecfex.dll') != ''
