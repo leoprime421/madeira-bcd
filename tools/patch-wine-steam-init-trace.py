@@ -12,7 +12,7 @@ import sys
 p = Path(sys.argv[1] if len(sys.argv) > 1 else "wine/dlls/ntdll/loader.c")
 s = p.read_text()
 
-marker = "/* madeira-bcd steam-init trace rev=2 */"
+marker = "/* madeira-bcd steam-init trace rev=3 */"
 if marker in s:
     print("steam-init trace: already patched")
     raise SystemExit(0)
@@ -23,7 +23,7 @@ anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID
 if anchor not in s:
     raise SystemExit("steam-init trace: MODULE_InitDLL anchor not found")
 
-prefix = """/* madeira-bcd steam-init trace rev=2 */
+prefix = """/* madeira-bcd steam-init trace rev=3 */"
 #ifdef __arm64ec__
 static int steam_init_trace_depth;
 static unsigned int steam_init_trace_ops;
@@ -111,7 +111,8 @@ ldr_anchor = """NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path
 {
 """
 ldr_new = ldr_anchor + """#ifdef __arm64ec__
-    if (steam_init_trace_depth && steam_init_trace_ops++ < 160)
+    int steam_trace_this_load = steam_init_trace_depth && steam_init_trace_ops++ < 160;
+    if (steam_trace_this_load)
         ERR( "[steam-init] LdrLoadDll request=%s search=%s flags=%08lx\\n",
              debugstr_us(libname), debugstr_w(search_path),
              load_flags ? *load_flags : 0 );
@@ -134,6 +135,56 @@ get_new = get_anchor + """#ifdef __arm64ec__
 if get_anchor not in s:
     raise SystemExit("steam-init trace: LdrGetProcedureAddress anchor not found")
 s = s.replace(get_anchor, get_new, 1)
+
+# Result logging: patch the concrete function bodies after their entry probes.
+path_old = """        if ((nts = LdrGetDllPath( libname->Buffer, (ULONG_PTR)search_path & load_library_search_flags, &path_name, &dummy )))
+            return nts;"""
+path_new = """        if ((nts = LdrGetDllPath( libname->Buffer, (ULONG_PTR)search_path & load_library_search_flags, &path_name, &dummy )))
+        {
+#ifdef __arm64ec__
+            if (steam_trace_this_load)
+                ERR( "[steam-init] LdrLoadDll result=%08lx module=%p stage=path\\n", nts, NULL );
+#endif
+            return nts;
+        }"""
+if path_old not in s:
+    raise SystemExit("steam-init trace: LdrGetDllPath return anchor not found")
+s = s.replace(path_old, path_new, 1)
+
+load_return_old = """    if (path_name != search_path) RtlReleasePath( path_name );
+    return nts;
+}
+"""
+load_return_new = """    if (path_name != search_path) RtlReleasePath( path_name );
+#ifdef __arm64ec__
+    if (steam_trace_this_load)
+        ERR( "[steam-init] LdrLoadDll result=%08lx module=%p\\n",
+             nts, wm ? wm->ldr.DllBase : NULL );
+#endif
+    return nts;
+}
+"""
+if load_return_old not in s:
+    raise SystemExit("steam-init trace: LdrLoadDll return anchor not found")
+s = s.replace(load_return_old, load_return_new, 1)
+
+get_return_old = """    RtlLeaveCriticalSection( &loader_section );
+    return ret;
+}
+"""
+get_return_new = """    RtlLeaveCriticalSection( &loader_section );
+#ifdef __arm64ec__
+    if (steam_init_trace_depth && steam_init_trace_ops <= 160)
+        ERR( "[steam-init] LdrGetProcedureAddress result=%08lx module=%p name=%s ord=%lu address=%p\\n",
+             ret, module, name ? debugstr_an(name->Buffer, name->Length) : "(ordinal)",
+             ord, (ret == STATUS_SUCCESS && address) ? *address : NULL );
+#endif
+    return ret;
+}
+"""
+if get_return_old not in s:
+    raise SystemExit("steam-init trace: LdrGetProcedureAddress return anchor not found")
+s = s.replace(get_return_old, get_return_new, 1)
 
 p.write_text(s)
 print("steam-init trace: patched", p)

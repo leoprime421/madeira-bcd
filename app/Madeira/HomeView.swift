@@ -1291,6 +1291,12 @@ struct AppSettingsSheet: View {
     @State private var storageBackedMemory = ExperimentalSettings.storageBackedMemory
     @State private var showControllers = false
 
+    private var madeiraVersion: String {
+        let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown"
+        let build = Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "?"
+        return "\(version) (\(build))"
+    }
+
     var body: some View {
         NavigationStack {
             Form {
@@ -1314,6 +1320,20 @@ struct AppSettingsSheet: View {
                 } footer: {
                     Text("Library is upstream's game library (the default). Applies after Madeira restarts.")
                 }
+                Section {
+                    HStack {
+                        Label("Madeira", systemImage: "info.circle")
+                        Spacer()
+                        Text(madeiraVersion)
+                            .foregroundStyle(.secondary)
+                            .monospacedDigit()
+                    }
+                } header: {
+                    Text("About")
+                } footer: {
+                    Text("This is the exact app version and build number stamped into the IPA.")
+                }
+
                 UpdatesSection()
 
                 SavesSection()
