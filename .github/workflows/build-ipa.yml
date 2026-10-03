@@ -350,6 +350,12 @@ jobs:
       - name: Patch Wine with targeted steam_api64 init tracing
         run: python3 tools/patch-wine-steam-init-trace.py wine/dlls/ntdll/loader.c
 
+      # GTA ARM64EC bootstrap diagnostic: compare TEB+0x58 and TLS bitmap in
+      # the main process versus the iOS pseudo-process child before changing
+      # TLS initialization order.
+      - name: Patch Wine with ARM64EC TLS diagnostics
+        run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
+
       # GTA stale-alias test: patcher uses Mach vm_page_mask here because
       # virtual_ios.c declares Wine's host_page_mask later in the file.
       - name: Patch stale anonymous JIT alias lifetime
