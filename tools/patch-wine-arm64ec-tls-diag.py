@@ -64,7 +64,7 @@ if src.count(anchor) != 1:
     raise SystemExit(f"{path}: load_arm64ec_module anchor count={src.count(anchor)}, expected 1")
 src = src.replace(anchor, helper, 1)
 
-after_load = """    if ((status = load_dll( NULL, module, 0, &wm, FALSE )))
+after_load = r"""    if ((status = load_dll( NULL, module, 0, &wm, FALSE )))
     {
         ERR( "could not load %s, status %lx\n", debugstr_w(module), status );
         NtTerminateProcess( GetCurrentProcess(), status );
@@ -72,7 +72,7 @@ after_load = """    if ((status = load_dll( NULL, module, 0, &wm, FALSE )))
 
     /* Phase 1: set up dispatcher pointers and FEX function pointers BEFORE
 """
-after_load_new = """    if ((status = load_dll( NULL, module, 0, &wm, FALSE )))
+after_load_new = r"""    if ((status = load_dll( NULL, module, 0, &wm, FALSE )))
     {
         ERR( "could not load %s, status %lx\n", debugstr_w(module), status );
         NtTerminateProcess( GetCurrentProcess(), status );
@@ -86,10 +86,10 @@ if src.count(after_load) != 1:
     raise SystemExit(f"{path}: post-load anchor count={src.count(after_load)}, expected 1")
 src = src.replace(after_load, after_load_new, 1)
 
-pre_init = """    /* Phase 2: invoke FEX's ProcessInit/ThreadInit. */
+pre_init = r"""    /* Phase 2: invoke FEX's ProcessInit/ThreadInit. */
     ERR( "load_arm64ec_module: about to call arm64ec_process_init\n" );
 """
-pre_init_new = """    /* Phase 2: invoke FEX's ProcessInit/ThreadInit. */
+pre_init_new = r"""    /* Phase 2: invoke FEX's ProcessInit/ThreadInit. */
     ios_arm64ec_tls_diag( "pre-arm64ec-process-init" );
     ERR( "load_arm64ec_module: about to call arm64ec_process_init\n" );
 """
