@@ -12,7 +12,7 @@ import sys
 p = Path(sys.argv[1] if len(sys.argv) > 1 else "wine/dlls/ntdll/loader.c")
 s = p.read_text()
 
-marker = "/* madeira-bcd steam-init trace rev=1 */"
+marker = "/* madeira-bcd steam-init trace rev=2 */"
 if marker in s:
     print("steam-init trace: already patched")
     raise SystemExit(0)
@@ -23,7 +23,7 @@ anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID
 if anchor not in s:
     raise SystemExit("steam-init trace: MODULE_InitDLL anchor not found")
 
-prefix = """/* madeira-bcd steam-init trace rev=1 */
+prefix = """/* madeira-bcd steam-init trace rev=2 */
 #ifdef __arm64ec__
 static int steam_init_trace_depth;
 static unsigned int steam_init_trace_ops;
@@ -43,6 +43,19 @@ static int steam_init_trace_module( const WINE_MODREF *wm )
 """
 s = s.replace(anchor, prefix + anchor, 1)
 
+# Add one function-local trace flag, but keep Wine's __TRY/__EXCEPT/__ENDTRY
+# sequence contiguous: MS SEH syntax does not allow statements between the
+# closing __TRY brace and __EXCEPT.
+locals_anchor = """    BOOL retv = FALSE;
+"""
+locals_new = locals_anchor + """#ifdef __arm64ec__
+    int steam_trace = 0;
+#endif
+"""
+if locals_anchor not in s:
+    raise SystemExit("steam-init trace: locals anchor not found")
+s = s.replace(locals_anchor, locals_new, 1)
+
 old = """    __TRY
     {
         retv = call_dll_entry_point( entry, module, reason, lpReserved );
@@ -51,35 +64,47 @@ old = """    __TRY
     }
 """
 new = """#ifdef __arm64ec__
+    steam_trace = (reason == DLL_PROCESS_ATTACH && steam_init_trace_module( wm ));
+    if (steam_trace)
     {
-        int steam_trace = (reason == DLL_PROCESS_ATTACH && steam_init_trace_module( wm ));
-        if (steam_trace)
-        {
-            steam_init_trace_depth++;
-            steam_init_trace_ops = 0;
-            ERR( "[steam-init] ENTER module=%p entry=%p reserved=%p tls=%ld flags=%08lx\\n",
-                 module, entry, lpReserved, wm->ldr.TlsIndex, wm->ldr.Flags );
-        }
+        steam_init_trace_depth++;
+        steam_init_trace_ops = 0;
+        ERR( "[steam-init] ENTER module=%p entry=%p reserved=%p tls=%hd flags=%08lx\\n",
+             module, entry, lpReserved, wm->ldr.TlsIndex, wm->ldr.Flags );
+    }
 #endif
+
     __TRY
     {
         retv = call_dll_entry_point( entry, module, reason, lpReserved );
         if (!retv)
             status = STATUS_DLL_INIT_FAILED;
     }
-#ifdef __arm64ec__
-        if (steam_trace)
-        {
-            ERR( "[steam-init] LEAVE module=%p entry=%p retval=%d status=%08lx ops=%u\\n",
-                 module, entry, retv, status, steam_init_trace_ops );
-            steam_init_trace_depth--;
-        }
-    }
-#endif
 """
 if old not in s:
     raise SystemExit("steam-init trace: entry-call anchor not found")
 s = s.replace(old, new, 1)
+
+endtry = """    __ENDTRY
+
+    /* The state of the module list may have changed due to the call
+"""
+endtry_new = """    __ENDTRY
+
+#ifdef __arm64ec__
+    if (steam_trace)
+    {
+        ERR( "[steam-init] LEAVE module=%p entry=%p retval=%d status=%08lx ops=%u\\n",
+             module, entry, retv, status, steam_init_trace_ops );
+        steam_init_trace_depth--;
+    }
+#endif
+
+    /* The state of the module list may have changed due to the call
+"""
+if endtry not in s:
+    raise SystemExit("steam-init trace: __ENDTRY anchor not found")
+s = s.replace(endtry, endtry_new, 1)
 
 ldr_anchor = """NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_flags,
                                              const UNICODE_STRING *libname, HMODULE* hModule)
@@ -103,7 +128,7 @@ get_anchor = """NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANS
 get_new = get_anchor + """#ifdef __arm64ec__
     if (steam_init_trace_depth && steam_init_trace_ops++ < 160)
         ERR( "[steam-init] LdrGetProcedureAddress module=%p name=%s ord=%lu\\n",
-             module, name ? debugstr_an(name) : "(ordinal)", ord );
+             module, name ? debugstr_an(name->Buffer, name->Length) : "(ordinal)", ord );
 #endif
 """
 if get_anchor not in s:
