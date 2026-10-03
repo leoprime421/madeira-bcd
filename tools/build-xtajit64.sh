@@ -130,6 +130,9 @@ fi
 #  - patch-fex-ios-avx.py: AVX/AVX2 only when MADEIRA_FEX_AVX=1 at launch, so
 #    the same module serves both; xtajit64-avx.dll is kept as a copy for the
 #    bridge's existing switch.
+#  - patch-fex-ios-alias-direct-storage.py: removes g_Entries/g_EntryCount
+#    indirections from IosJitAlias.cpp so pool code cannot NULL-deref an
+#    intermediate relocation during GTA V's first x64->EC dispatch.
 echo "=== with the map-notification, IntervalsLock and IRCapRIP fixes and the AVX opt-in ==="
 python3 "$R/tools/patch-fex-ios-mapview-selfshared.py" "$R/FEX/Source/Windows/ARM64EC/Module.cpp"
 python3 "$R/tools/patch-fex-ios-intervals-reentry.py" "$R/FEX/Source/Windows/Common"
@@ -139,8 +142,12 @@ python3 "$R/tools/patch-fex-ios-cpuid-index.py" "$R/FEX/FEXCore/Source/Interface
 python3 "$R/tools/patch-fex-ios-avx.py" "$R/FEX/$CPUF"
 python3 "$R/tools/patch-fex-virtualprotect-result.py" "$R/FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h"
 python3 "$R/tools/patch-fex-ios-codebuffer-guard.py" "$R/FEX"
+# GTA V 0.1.24: avoid intermediate pointer/reference globals in the ARM64EC
+# JIT-alias lookup.  A pool-executing lookup faulted with a NULL indexed base;
+# direct TU-local storage removes that relocation dependency.
+python3 "$R/tools/patch-fex-ios-alias-direct-storage.py" "$R/FEX/Source/Windows/ARM64EC/IosJitAlias.cpp"
 build
-git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp
+git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/ARM64EC/IosJitAlias.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
 echo "::notice::xtajit64.dll (and xtajit64-avx.dll) built from FEX $(git -C FEX rev-parse --short HEAD) with the map-notification and IntervalsLock self-deadlock fixes, IRCapRIP out of the game's TLS, the TSD-slot TEB for the WinAPI shims, the CPUID index wrap, and the MADEIRA_FEX_AVX opt-in, and shipped"
