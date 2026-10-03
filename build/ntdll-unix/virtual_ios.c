@@ -21525,6 +21525,58 @@ unsigned int virtual_locked_server_call( void *req_ptr )
 }
 
 
+/* An anonymous JIT mapping is logically writable but its guest VA is RX.
+ * Kernel copyout in read/pread cannot take our userspace Mach store-fault
+ * handler. After EFAULT, retry through the live RW alias under virtual_mutex.
+ * Do not use an alias to bypass guest protections or span multiple mappings.
+ */
+static BOOL ios_jit_file_read( int fd, void *addr, size_t size, BOOL positioned,
+                              off_t offset, ssize_t *result, int *error )
+{
+    void *rw, *rx;
+    uintptr_t start = (uintptr_t)addr, end, page;
+    BOOL watched = FALSE;
+    static unsigned int logged;
+
+    if (!size || size > UINTPTR_MAX - start ||
+        !find_view( addr, size ) ||
+        !ios_jit_anon_alias_find_cover( addr, size, &rw, &rx )) return FALSE;
+    end = start + size;
+    *result = -1;
+    *error = EFAULT;
+    for (page = start & ~page_mask; page < end;)
+    {
+        BYTE prot = get_page_vprot( (void *)page );
+        if ((prot & (VPROT_COMMITTED | VPROT_WRITE)) != (VPROT_COMMITTED | VPROT_WRITE) ||
+            (prot & VPROT_GUARD)) return TRUE;
+        if (prot & VPROT_WRITEWATCH) watched = TRUE;
+        if (end - page <= page_mask + 1) break;
+        page += page_mask + 1;
+    }
+
+    *result = positioned ? pread( fd, rw, size, offset ) : read( fd, rw, size );
+    *error = errno;  /* cache maintenance and logging must not replace this */
+    if (*result > 0)
+    {
+        sys_dcache_flush( rw, *result );
+        sys_icache_invalidate( rx, *result );
+        if (addr != rx) sys_icache_invalidate( addr, *result );
+        ios_jit_anon_alias_note_write( start + *result - 1 );
+        if (watched) update_write_watches( addr, size, *result );
+    }
+    if (logged < 32)
+    {
+        char path[PATH_MAX];
+        logged++;
+        if (fcntl( fd, F_GETPATH, path ) == -1) strcpy( path, "(unknown)" );
+        dprintf( 2, "[jit-file-read] %s guest=%p rw=%p requested=%lu got=%ld errno=%d "
+                    "offset=%lld file=%s\n", positioned ? "pread" : "read", addr, rw,
+                 (unsigned long)size, (long)*result, *result < 0 ? *error : 0,
+                 positioned ? (long long)offset : -1LL, path );
+    }
+    return TRUE;
+}
+
 /***********************************************************************
  *           virtual_locked_read
  */
@@ -21538,7 +21590,11 @@ ssize_t virtual_locked_read( int fd, void *addr, size_t size )
     if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-    if (!check_write_access( addr, size, &has_write_watch ))
+    if (ios_jit_file_read( fd, addr, size, FALSE, 0, &ret, &err ))
+    {
+        /* The alias retry includes guest permission and write-watch checks. */
+    }
+    else if (!check_write_access( addr, size, &has_write_watch ))
     {
         ret = read( fd, addr, size );
         err = errno;
@@ -21563,7 +21619,11 @@ ssize_t virtual_locked_pread( int fd, void *addr, size_t size, off_t offset )
     if (ret != -1 || use_kernel_writewatch || errno != EFAULT) return ret;
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
-    if (!check_write_access( addr, size, &has_write_watch ))
+    if (ios_jit_file_read( fd, addr, size, TRUE, offset, &ret, &err ))
+    {
+        /* Keep pread's explicit offset and leave the file position unchanged. */
+    }
+    else if (!check_write_access( addr, size, &has_write_watch ))
     {
         ret = pread( fd, addr, size, offset );
         err = errno;
