@@ -347,6 +347,9 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
+      - name: Patch Wine with targeted steam_api64 init tracing
+        run: python3 tools/patch-wine-steam-init-trace.py wine/dlls/ntdll/loader.c
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before

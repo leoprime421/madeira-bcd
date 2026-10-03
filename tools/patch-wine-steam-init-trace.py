@@ -1,0 +1,114 @@
+#!/usr/bin/env python3
+"""Add narrow diagnostics around steam_api64.dll's DLL_PROCESS_ATTACH.
+
+The trace is intentionally diagnostic-only: it does not change a DLL return
+value, Steam state, or loader semantics. While steam_api64.dll is inside its
+entry point it records nested LdrLoadDll/LdrGetProcedureAddress activity, which
+helps distinguish a Wine/API compatibility failure from a missing dependency.
+"""
+from pathlib import Path
+import sys
+
+p = Path(sys.argv[1] if len(sys.argv) > 1 else "wine/dlls/ntdll/loader.c")
+s = p.read_text()
+
+marker = "/* madeira-bcd steam-init trace rev=1 */"
+if marker in s:
+    print("steam-init trace: already patched")
+    raise SystemExit(0)
+
+anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved )
+{
+"""
+if anchor not in s:
+    raise SystemExit("steam-init trace: MODULE_InitDLL anchor not found")
+
+prefix = """/* madeira-bcd steam-init trace rev=1 */
+#ifdef __arm64ec__
+static int steam_init_trace_depth;
+static unsigned int steam_init_trace_ops;
+
+static int steam_init_trace_module( const WINE_MODREF *wm )
+{
+    static const WCHAR steam_name[] = L"steam_api64.dll";
+    UNICODE_STRING name, wanted;
+
+    if (!wm || !wm->ldr.BaseDllName.Buffer) return 0;
+    name = wm->ldr.BaseDllName;
+    RtlInitUnicodeString( &wanted, steam_name );
+    return RtlEqualUnicodeString( &name, &wanted, TRUE );
+}
+#endif
+
+"""
+s = s.replace(anchor, prefix + anchor, 1)
+
+old = """    __TRY
+    {
+        retv = call_dll_entry_point( entry, module, reason, lpReserved );
+        if (!retv)
+            status = STATUS_DLL_INIT_FAILED;
+    }
+"""
+new = """#ifdef __arm64ec__
+    {
+        int steam_trace = (reason == DLL_PROCESS_ATTACH && steam_init_trace_module( wm ));
+        if (steam_trace)
+        {
+            steam_init_trace_depth++;
+            steam_init_trace_ops = 0;
+            ERR( "[steam-init] ENTER module=%p entry=%p reserved=%p tls=%ld flags=%08lx\\n",
+                 module, entry, lpReserved, wm->ldr.TlsIndex, wm->ldr.Flags );
+        }
+#endif
+    __TRY
+    {
+        retv = call_dll_entry_point( entry, module, reason, lpReserved );
+        if (!retv)
+            status = STATUS_DLL_INIT_FAILED;
+    }
+#ifdef __arm64ec__
+        if (steam_trace)
+        {
+            ERR( "[steam-init] LEAVE module=%p entry=%p retval=%d status=%08lx ops=%u\\n",
+                 module, entry, retv, status, steam_init_trace_ops );
+            steam_init_trace_depth--;
+        }
+    }
+#endif
+"""
+if old not in s:
+    raise SystemExit("steam-init trace: entry-call anchor not found")
+s = s.replace(old, new, 1)
+
+ldr_anchor = """NTSTATUS WINAPI DECLSPEC_HOTPATCH LdrLoadDll(LPCWSTR search_path, DWORD *load_flags,
+                                             const UNICODE_STRING *libname, HMODULE* hModule)
+{
+"""
+ldr_new = ldr_anchor + """#ifdef __arm64ec__
+    if (steam_init_trace_depth && steam_init_trace_ops++ < 160)
+        ERR( "[steam-init] LdrLoadDll request=%s search=%s flags=%08lx\\n",
+             debugstr_us(libname), debugstr_w(search_path),
+             load_flags ? *load_flags : 0 );
+#endif
+"""
+if ldr_anchor not in s:
+    raise SystemExit("steam-init trace: LdrLoadDll anchor not found")
+s = s.replace(ldr_anchor, ldr_new, 1)
+
+get_anchor = """NTSTATUS WINAPI LdrGetProcedureAddress(HMODULE module, const ANSI_STRING *name,
+                                       ULONG ord, PVOID *address)
+{
+"""
+get_new = get_anchor + """#ifdef __arm64ec__
+    if (steam_init_trace_depth && steam_init_trace_ops++ < 160)
+        ERR( "[steam-init] LdrGetProcedureAddress module=%p name=%s ord=%lu\\n",
+             module, name ? debugstr_an(name) : "(ordinal)", ord );
+#endif
+"""
+if get_anchor not in s:
+    raise SystemExit("steam-init trace: LdrGetProcedureAddress anchor not found")
+s = s.replace(get_anchor, get_new, 1)
+
+p.write_text(s)
+print("steam-init trace: patched", p)
