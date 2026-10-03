@@ -350,6 +350,9 @@ jobs:
       - name: Patch Wine with targeted steam_api64 init tracing
         run: python3 tools/patch-wine-steam-init-trace.py wine/dlls/ntdll/loader.c
 
+      - name: Patch stale anonymous JIT alias lifetime
+        run: python3 tools/patch-ntdll-jit-alias-release.py build/ntdll-unix/virtual_ios.c
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before
