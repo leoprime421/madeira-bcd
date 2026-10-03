@@ -148,6 +148,19 @@ python3 "$R/tools/patch-fex-ios-codebuffer-guard.py" "$R/FEX"
 # early FEX thread. Use TPIDRRO_EL0 host-thread identity instead.
 python3 "$R/tools/patch-fex-ios-allocwatch-threadid.py" "$R/FEX/FEXCore/Source/Utils/AllocWatch.cpp"
 build
+
+# Verify the compiled ARM64EC module, not just the source patch. The old GTA
+# crash sequence starts AllocWatch::Clear with a Windows TLS load through
+# TEB->ThreadLocalStoragePointer: ldr xN, [x18, #0x58].
+AW_DIS="$("$MINGW/llvm-objdump" -d --no-show-raw-insn "$B/Bin/libarm64ecfex.dll" \
+  | awk '/<_ZN7FEXCore5Utils10AllocWatch5ClearEv>:/ {f=1} f {print} f && /ret/ {exit}')"
+printf '%s\n' "$AW_DIS"
+if printf '%s\n' "$AW_DIS" | grep -Eq 'ldr[[:space:]]+x[0-9]+, \\[x18, #0x58\\]'; then
+    echo "::error::AllocWatch::Clear still uses Windows TLS through x18+0x58"
+    exit 1
+fi
+echo "::notice::AllocWatch::Clear no longer reads TEB->ThreadLocalStoragePointer"
+
 git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
