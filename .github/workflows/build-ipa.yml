@@ -1163,7 +1163,11 @@ jobs:
           # the freshly patched source. Touch the source so make cannot reuse it.
           touch wine/dlls/ntdll/loader.c
           bash build/wine-pe/build-ntdll.sh
-          if ! strings app/Madeira/arm64ec-windows/ntdll.dll | grep -Fq '[steam-init]'; then
+          # Do not use `strings | grep -q` under pipefail: grep exits as soon
+          # as it finds the marker, then strings receives SIGPIPE and the
+          # pipeline is reported as failed even though the marker WAS found.
+          # Search the binary directly instead.
+          if ! grep -aFq '[steam-init]' app/Madeira/arm64ec-windows/ntdll.dll; then
             echo "::error::rebuilt ntdll.dll does not contain [steam-init] -- refusing to spend time archiving an uninstrumented IPA"
             exit 1
           fi
