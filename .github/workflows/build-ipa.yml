@@ -663,10 +663,11 @@ jobs:
           path: FEX/build-ios
           key: fex-ios-${{ steps.fexrev.outputs.sha }}-v3
 
-      # xtajit64.dll (FEX's ARM64EC module) with the MADEIRA_FEX_AVX opt-in:
-      # games built for AVX (Ghost of Tsushima) die on their first VEX
-      # instruction otherwise. The script keeps the committed DLL unless an
-      # unpatched rebuild matches it first.
+      # xtajit64.dll (FEX's ARM64EC module) with the MADEIRA_FEX_AVX opt-in
+      # plus the GTA V direct-alias-storage experiment.  GTA 0.1.24 reached
+      # libarm64ecfex.dll and faulted on an indexed load with a NULL base;
+      # tools/build-xtajit64.sh removes the unnecessary g_Entries/g_EntryCount
+      # relocation indirections before the patched rebuild.
       - name: Restore FEX ARM64EC build
         id: fexeccache
         uses: actions/cache/restore@v4
