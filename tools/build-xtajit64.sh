@@ -161,6 +161,22 @@ if printf '%s\n' "$AW_DIS" | grep -Eq 'ldr[[:space:]]+x[0-9]+, \\[x18, #0x58\\]'
 fi
 echo "::notice::AllocWatch::Clear no longer reads TEB->ThreadLocalStoragePointer"
 
+# Diagnostic census for EVERY remaining implicit TLS access in the compiled
+# ARM64EC module. Do not fail on libc++/C++ ABI helpers yet; once Wine gives
+# the child a valid ThreadLocalStoragePointer these are expected to be safe.
+TLS58="$("$MINGW/llvm-objdump" -d --no-show-raw-insn "$B/Bin/libarm64ecfex.dll" | awk '
+  /^[[:xdigit:]]+ <.*>:/ { fn=$0 }
+  /ldr[[:space:]]+x[0-9]+, \[x18, #0x58\]/ {
+      if (fn != last) { print fn; last=fn }
+      print "    " $0
+  }')"
+if [ -n "$TLS58" ]; then
+    echo "::warning::xtajit64.dll still contains TEB->ThreadLocalStoragePointer loads:"
+    printf '%s\n' "$TLS58"
+else
+    echo "::notice::xtajit64.dll contains no ldr xN,[x18,#0x58] accesses"
+fi
+
 git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
