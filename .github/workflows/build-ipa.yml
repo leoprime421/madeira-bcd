@@ -671,8 +671,15 @@ jobs:
 
       - name: Build xtajit64.dll (FEX fixes, AVX opt-in)
         if: env.MINGW_OK == '1'
-        continue-on-error: true
-        run: bash tools/build-xtajit64.sh
+        run: |
+          bash tools/build-xtajit64.sh
+          # This marker comes from the VirtualProtect semantics fix. Refuse to
+          # package an IPA that silently fell back to the tracked old module.
+          if ! grep -aFq '[fex-vprotect] FAILED' app/Madeira/arm64ec-windows/xtajit64.dll; then
+            echo "::error::xtajit64.dll does not contain the VirtualProtect fix/tracer"
+            exit 1
+          fi
+          echo "::notice::xtajit64.dll contains the VirtualProtect fix/tracer"
 
       - name: Save FEX ARM64EC build
         if: steps.fexeccache.outputs.cache-hit != 'true' && hashFiles('FEX/build-arm64ec/Bin/libarm64ecfex.dll') != ''

@@ -15,6 +15,13 @@ import sys
 p = Path(sys.argv[1] if len(sys.argv) > 1 else "FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h")
 s = p.read_text()
 
+# GetLastError is declared separately from memoryapi.h in llvm-mingw.
+include_anchor = "#include <memoryapi.h>\n"
+if "#include <errhandlingapi.h>\n" not in s:
+    if include_anchor not in s:
+        raise SystemExit("FEX VirtualProtect: memoryapi include anchor not found")
+    s = s.replace(include_anchor, include_anchor + "#include <errhandlingapi.h>\n", 1)
+
 marker = "/* madeira-bcd VirtualProtect semantics fix rev=1 */"
 if marker in s:
     print("FEX VirtualProtect: already patched")
