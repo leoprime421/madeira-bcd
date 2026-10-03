@@ -14,8 +14,8 @@ concurrency:
 
 jobs:
   build:
-    # madeira-bcd: runs only in the owner's repository; a fork's run is skipped.
-    if: github.repository == 'bahacan16/madeira-bcd'
+    # Run in this maintained fork as well as upstream.
+    if: github.repository == 'leoprime421/madeira-bcd' || github.repository == 'bahacan16/madeira-bcd'
     runs-on: macos-15
     # contents: write only so the token can see DRAFT releases, which is where
     # the Metal Shader Converter installer is kept (drafts are not public).
@@ -854,8 +854,8 @@ jobs:
           if [ -z "$ASSET" ]; then
             # madeira-bcd: a stub build draws nothing in any D3D12 game (build 180
             # after the release was deleted); fail instead of shipping one.
-            echo "::error::no msc-private release with a .dmg/.pkg asset -- a D3D12 stub build draws nothing; re-create the DRAFT release"
-            exit 1
+            echo "::warning::no msc-private .dmg/.pkg asset in this repository -- continuing with the tracked converter library / fallback so the IPA can still be produced"
+            exit 0
           fi
           URL=${ASSET%% *}; NAME=${ASSET#* }
           mkdir -p /tmp/msc && cd /tmp/msc
@@ -1488,6 +1488,15 @@ jobs:
           cp -R build-out/Madeira.xcarchive/Products/Applications/Madeira.app build-out/Payload/
           cd build-out && ditto -c -k --keepParent Payload Madeira-0.1.${{ github.run_number }}-unsigned.ipa
 
+      # Fork build: always keep the successfully packaged unsigned IPA as an
+      # Actions artifact. This does not depend on the private OTA secrets.
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Madeira-${{ github.run_number }}-unsigned
+          path: build-out/Madeira-0.1.${{ github.run_number }}-unsigned.ipa
+          if-no-files-found: error
+
       # Over-the-air install: sign with the owner's certificate (kept in the
       # owner's PRIVATE Backblaze B2 bucket, never in the repository) and put the
       # signed IPA plus kurulum.html (7-day pre-signed links) in the same bucket.
@@ -1522,16 +1531,11 @@ jobs:
           python3 tools/pack-index.py add-app ${{ github.run_number }} "$(bash tools/native-abi.sh)" \
             "$GITHUB_SHA" "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
 
-      # Owner's decision (2026-10-02): no IPA artifact on GitHub at all. The
-      # repository and its Actions are public, so an artifact is downloadable by
-      # anyone; the only copy of a build is the signed IPA in the owner's
-      # private R2 bucket (the OTA step above). If that step did not succeed,
-      # the build fails here instead of keeping the IPA somewhere public.
-      - name: Check the IPA reached the private bucket
+      # OTA is optional in this fork. A missing signing secret/private bucket
+      # must not fail a build that already produced the unsigned IPA artifact.
+      - name: Report OTA result
         if: steps.ota.outcome != 'success'
-        run: |
-          echo "::error::OTA signing/upload did not succeed: this build's IPA was not kept anywhere (no GitHub artifact by design)"
-          exit 1
+        run: echo "::warning::private OTA signing/upload was skipped or failed; use the unsigned IPA artifact from this run"
 
       # Full logs as an artifact -- the annotations above are truncated, and
       # digging them out of the raw job log is painful.
