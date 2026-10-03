@@ -49,8 +49,11 @@ static int ios_jit_anon_alias_retire_release( void *base, size_t size )
 
     if (!base || !size || size > UINTPTR_MAX - lo) return 0;
     hi = lo + size;
-    host_hi = hi > UINTPTR_MAX - host_page_mask
-            ? UINTPTR_MAX : (hi + host_page_mask) & ~(uintptr_t)host_page_mask;
+    /* This helper is inserted before Wine's host_page_mask declaration.
+     * Mach's vm_page_mask is already available here and describes the same
+     * native iOS VM page granularity (16 KB on the target device). */
+    host_hi = hi > UINTPTR_MAX - vm_page_mask
+            ? UINTPTR_MAX : (hi + vm_page_mask) & ~(uintptr_t)vm_page_mask;
 
     pthread_mutex_lock( &ios_pool_lock );
     for (i = 0; i < ios_jit_anon_alias_count; i++)
