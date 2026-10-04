@@ -360,6 +360,13 @@ jobs:
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
+      # GTA build 30 moved past the AllocWatch AV and now GTA5.exe fails its
+      # steam_api64.dll import with STATUS_INVALID_HANDLE. Trace the file
+      # handle lifetime without probing it through handle_to_fd (which would
+      # populate the cache and perturb the failure). d3d9.dll is the control.
+      - name: Patch Wine with steam handle diagnostics
+        run: python3 tools/patch-wine-steam-handle-diag.py wine/dlls/ntdll/loader.c
+
       # GTA stale-alias test: patcher uses Mach vm_page_mask here because
       # virtual_ios.c declares Wine's host_page_mask later in the file.
       - name: Patch stale anonymous JIT alias lifetime
