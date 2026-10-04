@@ -367,7 +367,8 @@ jobs:
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
-      # GTA build 33 proved retries cannot fix this: the launcher opens and
+      # GTA build 33 proved retries cannot fix this. Build 35 carries the
+      # corrected ARM64EC guard for the parent-fd bridge: the launcher opens and
       # maps steam_api64.dll, while the child returns STATUS_INVALID_HANDLE on
       # every NtOpenFile. Preserve a duplicated host fd from the successful
       # launcher open and turn it into a fresh Wine handle in the child's own
