@@ -1243,7 +1243,7 @@ jobs:
           for d in d3d11.dll dxgi.dll winemetal.dll d3d10core.dll; do
             [ -f "app/Madeira/aarch64-windows/$d" ] || MISSING="$MISSING aarch64/$d"
           done
-          for d in d3d11.dll dxgi.dll winemetal.dll d3d12.dll madeira_d3d12.dll xtajit64.dll ntdll.dll; do
+          for d in d3d11.dll dxgi.dll winemetal.dll d3d12.dll madeira_d3d12.dll xtajit64.dll ntdll.dll cryptsp.dll gamingtcui.dll; do
             [ -f "app/Madeira/arm64ec-windows/$d" ] || MISSING="$MISSING arm64ec/$d"
           done
           if [ -n "$MISSING" ]; then
