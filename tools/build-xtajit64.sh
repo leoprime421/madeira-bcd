@@ -1,6 +1,7 @@
 #!/bin/bash
 # Build the ARM64EC FEX module (libarm64ecfex.dll) from the FEX submodule with
-# tools/patch-fex-ios-mapview-selfshared.py and tools/patch-fex-ios-avx.py
+# tools/patch-fex-ios-mapview-selfshared.py, tools/patch-fex-ios-avx.py and
+# tools/patch-fex-ios-rcpc.py
 # applied, and ship it as xtajit64.dll (and a copy as xtajit64-avx.dll, which
 # WineProcessBridge.m links in when a game turns AVX on; the AVX patch is
 # itself gated on MADEIRA_FEX_AVX=1). Since build 231 this replaces upstream's
@@ -130,6 +131,9 @@ fi
 #  - patch-fex-ios-avx.py: AVX/AVX2 only when MADEIRA_FEX_AVX=1 at launch, so
 #    the same module serves both; xtajit64-avx.dll is kept as a copy for the
 #    bridge's existing switch.
+#  - patch-fex-ios-rcpc.py: MADEIRA_FEX_NO_RCPC=1 makes the iOS ARM64EC
+#    module really honor the FH4 acquire-poll workaround; the generic
+#    FEX_HOSTFEATURES override is not read by this synthesized path.
 #  - patch-fex-ios-allocwatch-threadid.py: AllocWatch::CurrentThreadId uses
 #    TPIDRRO_EL0 on iOS ARM64EC too. GTA V build 25 proved the implicit
 #    thread_local path can see TEB->ThreadLocalStoragePointer == NULL in a
@@ -141,6 +145,7 @@ python3 "$R/tools/patch-fex-ios-ircap-tls.py" "$R/FEX/FEXCore/Source/Interface/I
 python3 "$R/tools/patch-fex-ios-teb-tsd.py" "$R/FEX/Source/Windows/Common/Priv.h"
 python3 "$R/tools/patch-fex-ios-cpuid-index.py" "$R/FEX/FEXCore/Source/Interface/Core/CPUID.cpp"
 python3 "$R/tools/patch-fex-ios-avx.py" "$R/FEX/$CPUF"
+python3 "$R/tools/patch-fex-ios-rcpc.py" "$R/FEX/$CPUF"
 python3 "$R/tools/patch-fex-virtualprotect-result.py" "$R/FEX/FEXCore/include/FEXCore/Utils/AllocatorHooks.h"
 python3 "$R/tools/patch-fex-ios-codebuffer-guard.py" "$R/FEX"
 # GTA V build 25: AllocWatch::Clear() used C++ TLS on ARM64EC and generated
@@ -177,7 +182,7 @@ else
     echo "::notice::xtajit64.dll contains no ldr xN,[x18,#0x58] accesses"
 fi
 
-git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
+git -C FEX checkout -- "$CPUF" Source/Windows/Common/CPUFeatures.cpp Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
 echo "::notice::xtajit64.dll (and xtajit64-avx.dll) built from FEX $(git -C FEX rev-parse --short HEAD) with the map-notification and IntervalsLock self-deadlock fixes, IRCapRIP out of the game's TLS, the TSD-slot TEB for the WinAPI shims, the CPUID index wrap, and the MADEIRA_FEX_AVX opt-in, and shipped"
