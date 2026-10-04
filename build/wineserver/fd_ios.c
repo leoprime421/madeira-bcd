@@ -2677,6 +2677,9 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
     struct fd *fd;
     int root_fd = -1;
     int rw_mode;
+#ifdef WINE_IOS
+    int ios_ebadf_retry = 0;
+#endif
     char *path;
 
     if (((options & FILE_DELETE_ON_CLOSE) && !(access & DELETE)) ||
@@ -2727,6 +2730,9 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
     }
     else rw_mode = O_RDONLY;
 
+#ifdef WINE_IOS
+retry_ios_open:
+#endif
     if ((fd->unix_fd = open( name, rw_mode | (flags & ~O_TRUNC), *mode )) == -1)
     {
 #ifdef WINE_IOS
@@ -2743,6 +2749,23 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
 
         if (fd->unix_fd == -1)
         {
+#ifdef WINE_IOS
+            /* Madeira runs wineserver and every Wine pseudo-process as threads
+             * of one native iOS process. They therefore share ONE descriptor
+             * table, unlike upstream Wine. A stale client-cache close can race
+             * descriptor reuse and make an otherwise ordinary path open report
+             * EBADF. Do not turn that one transient collision into
+             * STATUS_INVALID_HANDLE for the guest: retry once with a fresh fd.
+             *
+             * This is deliberately limited to EBADF. ENOENT/EACCES/sharing and
+             * every other real filesystem error keep their original semantics. */
+            if (errno == EBADF && !ios_ebadf_retry++)
+            {
+                ws_log("[srv-open-retry] EBADF from open; retrying once pid=%04x tid=%04x path=%s rev=ml1140",
+                       current ? current->process->id : 0, current ? current->id : 0, name);
+                goto retry_ios_open;
+            }
+#endif
             /* check for trailing slash on file path */
             if ((errno == ENOENT || (errno == ENOTDIR && !(options & FILE_DIRECTORY_FILE))) && name[strlen(name) - 1] == '/')
                 set_error( STATUS_OBJECT_NAME_INVALID );
@@ -2754,7 +2777,32 @@ struct fd *open_fd( struct fd *root, const char *name, struct unicode_str nt_nam
 
     fd->nt_name = dup_nt_name( root, nt_name, &fd->nt_namelen );
     fd->unix_name = NULL;
+#ifdef WINE_IOS
+    /* Upstream assumes the fd cannot disappear between open() and fstat()
+     * because wineserver owns a separate process descriptor table. Madeira's
+     * in-process server does not have that isolation. Validate before the fd
+     * enters the inode/share tables and recover one EBADF reuse race. */
+    if (fstat( fd->unix_fd, &st ) == -1)
+    {
+        int err = errno;
+        if (err == EBADF && !ios_ebadf_retry++)
+        {
+            ws_log("[srv-open-retry] fd=%d vanished before fstat; reopening pid=%04x tid=%04x path=%s rev=ml1140",
+                   fd->unix_fd, current ? current->process->id : 0, current ? current->id : 0, name);
+            close( fd->unix_fd );
+            fd->unix_fd = -1;
+            free( fd->nt_name );
+            fd->nt_name = NULL;
+            fd->nt_namelen = 0;
+            goto retry_ios_open;
+        }
+        errno = err;
+        file_set_error();
+        goto error;
+    }
+#else
     fstat( fd->unix_fd, &st );
+#endif
     *mode = st.st_mode;
 
     /* only bother with an inode for normal files and directories */
