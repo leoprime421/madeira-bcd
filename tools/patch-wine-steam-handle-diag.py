@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Trace and recover GTA V steam_api64.dll child invalid-handle opens with a parent fd bridge.
+"""Trace and recover GTA V child invalid-handle DLL opens with a parent fd bridge.
 
-Targets steam_api64.dll plus d3d9.dll as a successful control loaded by both
-GTAVLauncher and the GTA5.exe pseudo-process.
+Targets steam_api64.dll, socialclub.dll and steam_api_ext64.dll, plus d3d9.dll
+as a successful control loaded by both GTAVLauncher and the GTA5.exe pseudo-process.
 
 The trace distinguishes:
   * fullname/file-id/module reuse versus a normal file open
@@ -50,20 +50,36 @@ NTSTATUS CDECL wine_server_fd_to_handle( int fd, unsigned int access, unsigned i
 NTSTATUS CDECL wine_server_handle_to_fd( HANDLE handle, unsigned int access, int *unix_fd,
                                          unsigned int *options );
 
-static const WCHAR ios_steam_fd_envW[] = L"MADEIRA_STEAM_API64_FD";
+static const WCHAR ios_steam_fd_envW[]  = L"MADEIRA_STEAM_API64_FD";
+static const WCHAR ios_social_fd_envW[] = L"MADEIRA_SOCIALCLUB_FD";
+static const WCHAR ios_ext_fd_envW[]    = L"MADEIRA_STEAM_API_EXT64_FD";
 
-static int ios_steam_handle_is_steam( const UNICODE_STRING *name )
+static const WCHAR *ios_steam_bridge_env( const UNICODE_STRING *name )
 {
-    static const WCHAR steamW[] = L"steam_api64.dll";
+    static const WCHAR steamW[]  = L"steam_api64.dll";
+    static const WCHAR socialW[] = L"socialclub.dll";
+    static const WCHAR extW[]    = L"steam_api_ext64.dll";
     const WCHAR *base, *p, *end;
     SIZE_T len;
 
-    if (!name || !name->Buffer) return 0;
+    if (!name || !name->Buffer) return NULL;
     base = name->Buffer;
     end = name->Buffer + name->Length / sizeof(WCHAR);
     for (p = base; p < end; p++) if (*p == '\\' || *p == '/') base = p + 1;
     len = end - base;
-    return len == ARRAY_SIZE(steamW) - 1 && !wcsnicmp( base, steamW, len );
+
+    if (len == ARRAY_SIZE(steamW) - 1 && !wcsnicmp( base, steamW, len ))
+        return ios_steam_fd_envW;
+    if (len == ARRAY_SIZE(socialW) - 1 && !wcsnicmp( base, socialW, len ))
+        return ios_social_fd_envW;
+    if (len == ARRAY_SIZE(extW) - 1 && !wcsnicmp( base, extW, len ))
+        return ios_ext_fd_envW;
+    return NULL;
+}
+
+static int ios_steam_handle_is_steam( const UNICODE_STRING *name )
+{
+    return ios_steam_bridge_env( name ) != NULL;
 }
 
 static int ios_steam_handle_diag_target( const UNICODE_STRING *name )
@@ -85,12 +101,14 @@ static void ios_publish_steam_fd( HANDLE handle, const UNICODE_STRING *name )
 {
     UNICODE_STRING env_name, env_val, existing;
     WCHAR value[24], old_value[24];
+    const WCHAR *envW;
     NTSTATUS status;
     int fd = -1;
 
-    if (!ios_steam_handle_is_steam( name )) return;
+    envW = ios_steam_bridge_env( name );
+    if (!envW) return;
 
-    RtlInitUnicodeString( &env_name, ios_steam_fd_envW );
+    RtlInitUnicodeString( &env_name, envW );
     existing.Buffer = old_value;
     existing.Length = 0;
     existing.MaximumLength = sizeof(old_value);
@@ -100,16 +118,16 @@ static void ios_publish_steam_fd( HANDLE handle, const UNICODE_STRING *name )
     status = wine_server_handle_to_fd( handle, FILE_READ_DATA, &fd, NULL );
     if (status || fd < 0)
     {
-        ERR( "[steam-fd-bridge] publish FAILED peb=%p handle=%p status=%08x fd=%d rev=ml1143\n",
-             NtCurrentTeb()->Peb, handle, (unsigned)status, fd );
+        ERR( "[steam-fd-bridge] publish FAILED peb=%p name=%s handle=%p status=%08x fd=%d rev=ml1144\n",
+             NtCurrentTeb()->Peb, debugstr_us(name), handle, (unsigned)status, fd );
         return;
     }
 
     swprintf( value, ARRAY_SIZE(value), L"%d", fd );
     RtlInitUnicodeString( &env_val, value );
     status = RtlSetEnvironmentVariable( NULL, &env_name, &env_val );
-    ERR( "[steam-fd-bridge] publish peb=%p handle=%p fd=%d env_status=%08x rev=ml1143\n",
-         NtCurrentTeb()->Peb, handle, fd, (unsigned)status );
+    ERR( "[steam-fd-bridge] publish peb=%p name=%s handle=%p fd=%d env_status=%08x rev=ml1144\n",
+         NtCurrentTeb()->Peb, debugstr_us(name), handle, fd, (unsigned)status );
     /* Intentionally DO NOT close fd. It is the bridge object inherited by the
      * child pseudo-process and is released only when the native app exits. */
 }
@@ -119,20 +137,22 @@ static NTSTATUS ios_open_steam_from_parent_fd( HANDLE *handle, ACCESS_MASK acces
 {
     UNICODE_STRING env_name, env_val;
     WCHAR value[24];
+    const WCHAR *envW;
     NTSTATUS status;
     int fd = 0, i, chars;
 
-    if (!ios_steam_handle_is_steam( name )) return STATUS_INVALID_HANDLE;
+    envW = ios_steam_bridge_env( name );
+    if (!envW) return STATUS_INVALID_HANDLE;
 
-    RtlInitUnicodeString( &env_name, ios_steam_fd_envW );
+    RtlInitUnicodeString( &env_name, envW );
     env_val.Buffer = value;
     env_val.Length = 0;
     env_val.MaximumLength = sizeof(value);
     status = RtlQueryEnvironmentVariable_U( NULL, &env_name, &env_val );
     if (status)
     {
-        ERR( "[steam-fd-bridge] child lookup missing peb=%p status=%08x rev=ml1143\n",
-             NtCurrentTeb()->Peb, (unsigned)status );
+        ERR( "[steam-fd-bridge] child lookup missing peb=%p name=%s status=%08x rev=ml1144\n",
+             NtCurrentTeb()->Peb, debugstr_us(name), (unsigned)status );
         return STATUS_INVALID_HANDLE;
     }
 
@@ -146,8 +166,8 @@ static NTSTATUS ios_open_steam_from_parent_fd( HANDLE *handle, ACCESS_MASK acces
 
     *handle = 0;
     status = wine_server_fd_to_handle( fd, access, 0, handle );
-    ERR( "[steam-fd-bridge] child import peb=%p fd=%d status=%08x handle=%p rev=ml1143\n",
-         NtCurrentTeb()->Peb, fd, (unsigned)status, *handle );
+    ERR( "[steam-fd-bridge] child import peb=%p name=%s fd=%d status=%08x handle=%p rev=ml1144\n",
+         NtCurrentTeb()->Peb, debugstr_us(name), fd, (unsigned)status, *handle );
     return status;
 }
 #endif
@@ -219,7 +239,7 @@ open_new = r"""    InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSIT
             io.Status = STATUS_SUCCESS;
             io.Information = FILE_OPENED;
             ERR( "[steam-handle] stage=parent-fd-bridge tid=%04Ix peb=%p name=%s "
-                 "status=%08x handle=%p rev=ml1143\n",
+                 "status=%08x handle=%p rev=ml1144\n",
                  (ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread, NtCurrentTeb()->Peb,
                  debugstr_us(nt_name), (unsigned)status, handle );
         }
@@ -227,11 +247,11 @@ open_new = r"""    InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSIT
     /* Build 33 confirmed the parent-fd bridge is the primary recovery. Keep
      * two direct retries only as a fallback when no inherited bridge fd exists. */
     /* GTA5.exe reached this exact point with c0000008 while the
-     * parent opened the same steam_api64.dll successfully. The lower file
+     * parent opened the same dependency successfully. The lower file
      * layer recovery did not show up in that device run. Give the loader two
      * fresh, real NtOpenFile attempts before a transient shared-fd race becomes
-     * STATUS_DLL_NOT_FOUND/c0000135. Only INVALID_HANDLE and the two targeted
-     * DLL names use this path; every other status keeps normal Wine semantics. */
+     * STATUS_DLL_NOT_FOUND/c0000135. Only INVALID_HANDLE on the targeted
+     * DLL names uses this path; every other status keeps normal Wine semantics. */
     if (ios_diag && status == STATUS_INVALID_HANDLE)
     {
         unsigned int attempt;
