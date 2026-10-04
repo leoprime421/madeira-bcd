@@ -347,11 +347,11 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
-      # GTA build 31: child NtOpenFile(steam_api64.dll) returned
-      # STATUS_INVALID_HANDLE before a file handle existed. Madeira's server and
-      # clients share one host fd table, so recover one transient fd-reuse race
-      # without changing any non-EBADF/file-open semantics.
-      - name: Patch Wine with iOS invalid-handle open recovery
+      # GTA build 32: the child still returned STATUS_INVALID_HANDLE from
+      # NtOpenFile(steam_api64.dll), and the previous recovery did not appear in
+      # the device log. Replay the real FILE_OPEN request at the create_file
+      # layer; semantic failures keep their original status.
+      - name: Patch Wine with strengthened iOS invalid-handle open recovery
         run: python3 tools/patch-wine-ios-invalid-handle-retry.py wine/dlls/ntdll/unix/file.c
 
       - name: Patch Wine with targeted steam_api64 init tracing
@@ -367,11 +367,11 @@ jobs:
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
-      # GTA build 30 moved past the AllocWatch AV and now GTA5.exe fails its
-      # steam_api64.dll import with STATUS_INVALID_HANDLE. Trace the file
-      # handle lifetime without probing it through handle_to_fd (which would
-      # populate the cache and perturb the failure). d3d9.dll is the control.
-      - name: Patch Wine with steam handle diagnostics
+      # GTA build 32 confirms the failure is the child's NtOpenFile itself.
+      # Keep the handle trace and add a loader-level last-resort retry for
+      # STATUS_INVALID_HANDLE on steam_api64.dll/d3d9.dll so a transient
+      # shared-fd race does not become c0000135 before GTA reaches its next stage.
+      - name: Patch Wine with steam handle recovery and diagnostics
         run: python3 tools/patch-wine-steam-handle-diag.py wine/dlls/ntdll/loader.c
 
       # GTA stale-alias test: patcher uses Mach vm_page_mask here because
