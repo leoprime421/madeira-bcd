@@ -1024,14 +1024,11 @@ static void *wine_process_thread(void *arg) {
         if (fex_forza4_launch) {
             setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
             setenv("MADEIRA_FEX_FH4_SPIN_FIX", "1", 1);
-            /* The executable-protect probe in the shipped ARM64EC ntdll can
-             * leave InSyscallCallback set after its first request. Then FEX
-             * misses later image-protection notifications; FH4 jumps into
-             * .detourd and its xquery lookup fails. Restore the wrapper's
-             * normal leave path for this title so each protect updates FEX. */
-            setenv("MADEIRA_EXECREQ_LEAVE", "1", 1);
+            /* Wine's ARM64EC NtProtectVirtualMemory executable-request path
+             * now clears callback state in the source rebuilt by CI. Do not
+             * enable the old layout-dependent binary patch here. */
             dprintf(STDERR_FILENO,
-                    "[forza-fex] FH4 startup fixes enabled (no-RCpc, spin repair, exec-protect notifications)\n");
+                    "[forza-fex] FH4 startup fixes enabled (no-RCpc, spin repair, source exec-protect callback fix)\n");
         }
         const char *direct_app = getenv("MADEIRA_STEAM_APPID");    /* set by the library for one direct Steam start (Start with: The game); not a setting */
         const char *direct_path = getenv("MADEIRA_STEAM_APPPATH"); /* that game's install folder, with MADEIRA_STEAM_APPID; not a setting */
