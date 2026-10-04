@@ -344,8 +344,8 @@ static void call_req_handler( struct thread *thread )
         wait_probe = ++wait_probe_seq;
         if (wait_probe <= 4 || !(wait_probe % 131072))
             fprintf( stderr, "[wait-probe] enter seq=%lu tid=%04x timeout=%lld flags=0x%x size=%u\n",
-                     wait_probe, thread->id, (long long)thread->req.select.timeout,
-                     thread->req.select.flags, thread->req.select.size );
+                     wait_probe, thread->id, (long long)thread->req.select_request.timeout,
+                     thread->req.select_request.flags, thread->req.select_request.size );
     }
 
     if (req < REQ_NB_REQUESTS)
@@ -356,7 +356,7 @@ static void call_req_handler( struct thread *thread )
     if (wait_probe && (wait_probe <= 4 || !(wait_probe % 131072)))
         fprintf( stderr, "[wait-probe] exit seq=%lu tid=%04x error=0x%08x signaled=%d\n",
                  wait_probe, thread->id, current ? current->error : STATUS_UNSUCCESSFUL,
-                 reply.select.signaled );
+                 reply.select_reply.signaled );
 
     if (current)
     {
