@@ -1037,7 +1037,33 @@ static void *wine_process_thread(void *arg) {
                  strstr(launch_exe, "GTA5.exe") ||
                  strstr(launch_exe, "GTA5_Enhanced.exe"));
 
-            if (gta_launch) {
+            int forza4_launch = launch_exe && strstr(launch_exe, "ForzaHorizon4.exe");
+
+            if (forza4_launch) {
+                /* Forza Horizon 4 is Steam app 1293830. Do not let it inherit
+                 * the historical Thumper fallback (356400): besides exposing the
+                 * wrong identity to steam_api64, that also makes FEX search for
+                 * Steam_356400_ForzaHorizon4.exe.json.
+                 *
+                 * Use the directory of the actual launch path as SteamAppPath so
+                 * repacks/custom install folders are not forced to one hard-coded
+                 * location. If MADEIRA_EXE is unexpectedly just a file name, leave
+                 * SteamAppPath unset rather than publishing Thumper's directory. */
+                char forza_app_path[1024];
+                const char *last_sep = strrchr(launch_exe, '\\');
+                if (last_sep && last_sep > launch_exe &&
+                    (size_t)(last_sep - launch_exe) < sizeof(forza_app_path)) {
+                    size_t path_len = (size_t)(last_sep - launch_exe);
+                    memcpy(forza_app_path, launch_exe, path_len);
+                    forza_app_path[path_len] = '\0';
+                    setenv("SteamAppPath", forza_app_path, 1);
+                } else {
+                    unsetenv("SteamAppPath");
+                }
+                setenv("SteamGameId", "1293830", 1);
+                setenv("SteamAppId",  "1293830", 1);
+                dprintf(STDERR_FILENO, "[steam-env] Forza Horizon 4 launch: Steam identity 1293830 published\n");
+            } else if (gta_launch) {
                 /* GTA V must not inherit the historical Thumper fallback identity.
                  * Direct Steam-library metadata above still wins when available. */
                 setenv("SteamAppPath", "C:\\Program Files\\gta v", 1);
