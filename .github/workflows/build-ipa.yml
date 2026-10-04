@@ -355,6 +355,8 @@ jobs:
       # TLS initialization order. The diagnostic patcher uses raw C anchors so
       # embedded \n escapes are matched literally; this run also carries the
       # full xtajit64 x18+0x58 census and GTA Steam identity cleanup.
+      # Build 30 also fixes the GTA launch-env scope: this early block reads
+      # MADEIRA_EXE directly instead of referring to madeira_exe before declaration.
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
