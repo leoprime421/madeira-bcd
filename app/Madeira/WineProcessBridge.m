@@ -1069,15 +1069,13 @@ static void *wine_process_thread(void *arg) {
                  * but the game then burns one core forever in the same x64 block
                  * (ForzaHorizon4.exe+0x3049780).  The generated host loop uses
                  * LDAPRB for the byte TSO poll because this device advertises
-                 * FEAT_LRCPC.  Force FEX down its stronger LDAR acquire path for
-                 * this title only.  Keep TSO explicitly enabled so the fallback
-                 * remains x86-ordering-correct instead of turning the barrier
-                 * model off to hide the symptom.
-                 *
-                 * FEX accepts HostFeatures as a comma-separated override list.
-                 * disablelrcpc2 is included as well so a future device/build does
-                 * not silently select the immediate RCpc path for the same game. */
-                setenv("FEX_HOSTFEATURES", "disablelrcpc,disablelrcpc2", 1);
+                 * FEAT_LRCPC.  The iOS ARM64EC FEX build synthesizes HostFeatures
+                 * itself and does not consume FEX_HOSTFEATURES, so the build
+                 * applies a Madeira-specific override in CPUFeatures.cpp.
+                 * Keep TSO explicitly enabled so the fallback remains
+                 * x86-ordering-correct instead of turning the barrier model off
+                 * to hide the symptom. */
+                setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
                 setenv("FEX_TSOENABLED", "1", 1);
                 dprintf(STDERR_FILENO,
                         "[forza-fex] RCpc disabled for FH4; forcing LDAR TSO acquire path\n");
