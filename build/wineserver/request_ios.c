@@ -335,10 +335,28 @@ static void call_req_handler( struct thread *thread )
             t0 = t1;
         }
     }
+    /* madeira-bcd: FH4 stalls show tens of thousands of waitN calls per second.
+     * Sample select request arguments and completion so a zero-timeout / always-
+     * signaled wait can be distinguished from a wait that never wakes. */
+    static unsigned long wait_probe_seq;
+    unsigned long wait_probe = 0;
+    if (req == REQ_select) {
+        wait_probe = ++wait_probe_seq;
+        if (wait_probe <= 4 || !(wait_probe % 131072))
+            fprintf( stderr, "[wait-probe] enter seq=%lu tid=%04x timeout=%lld flags=0x%x size=%u\n",
+                     wait_probe, thread->id, (long long)thread->req.select.timeout,
+                     thread->req.select.flags, thread->req.select.size );
+    }
+
     if (req < REQ_NB_REQUESTS)
         req_handlers[req]( &current->req, &reply );
     else
         set_error( STATUS_NOT_IMPLEMENTED );
+
+    if (wait_probe && (wait_probe <= 4 || !(wait_probe % 131072)))
+        fprintf( stderr, "[wait-probe] exit seq=%lu tid=%04x error=0x%08x signaled=%d\n",
+                 wait_probe, thread->id, current ? current->error : STATUS_UNSUCCESSFUL,
+                 reply.select.signaled );
 
     if (current)
     {
