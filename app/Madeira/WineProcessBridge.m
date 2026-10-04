@@ -1014,6 +1014,18 @@ static void *wine_process_thread(void *arg) {
          * and this launch publishes the game's own identity instead of the fixed one. Both
          * are cleared here, so no later launch inherits them. */
         const char *dock_session = getenv("MADEIRA_DOCK_SESSION");
+        const char *fex_launch_exe = getenv("MADEIRA_EXE");
+        const int fex_forza4_launch = fex_launch_exe && strstr(fex_launch_exe, "ForzaHorizon4.exe");
+
+        /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */
+        unsetenv("MADEIRA_FEX_NO_RCPC");
+        unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
+        if (fex_forza4_launch) {
+            setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
+            setenv("MADEIRA_FEX_FH4_SPIN_FIX", "1", 1);
+            dprintf(STDERR_FILENO,
+                    "[forza-fex] FH4 startup fixes enabled (no-RCpc + writer-path spin repair)\n");
+        }
         const char *direct_app = getenv("MADEIRA_STEAM_APPID");    /* set by the library for one direct Steam start (Start with: The game); not a setting */
         const char *direct_path = getenv("MADEIRA_STEAM_APPPATH"); /* that game's install folder, with MADEIRA_STEAM_APPID; not a setting */
         if (dock_session && dock_session[0] == '1') {
@@ -1075,10 +1087,7 @@ static void *wine_process_thread(void *arg) {
                  * Keep TSO explicitly enabled so the fallback remains
                  * x86-ordering-correct instead of turning the barrier model off
                  * to hide the symptom. */
-                setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
                 setenv("FEX_TSOENABLED", "1", 1);
-                dprintf(STDERR_FILENO,
-                        "[forza-fex] RCpc disabled for FH4; forcing LDAR TSO acquire path\n");
 
                 dprintf(STDERR_FILENO, "[steam-env] Forza Horizon 4 launch: Steam identity 1293830 published\n");
             } else if (gta_launch) {
