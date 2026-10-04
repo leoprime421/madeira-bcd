@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Trace GTA V steam_api64.dll handle lifetime without changing it.
+"""Trace and recover GTA V steam_api64.dll transient invalid-handle opens.
 
 Targets steam_api64.dll plus d3d9.dll as a successful control loaded by both
 GTAVLauncher and the GTA5.exe pseudo-process.
@@ -13,7 +13,7 @@ The trace distinguishes:
   * NtMapViewOfSection status and mapped-module reuse
 
 It intentionally does NOT call wine_server_handle_to_fd(): that call can fill
-the Unix fd cache and would perturb the bug being measured.
+the Unix fd cache. Recovery only replays NtOpenFile after STATUS_INVALID_HANDLE.
 """
 from pathlib import Path
 import sys
@@ -106,6 +106,31 @@ open_new = r"""    InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSIT
         ERR( "[steam-handle] stage=NtOpenFile tid=%04Ix peb=%p name=%s status=%08x handle=%p io=%08x\n",
              (ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread, NtCurrentTeb()->Peb,
              debugstr_us(nt_name), (unsigned)status, handle, (unsigned)io.Status );
+#ifdef __arm64ec__
+    /* Build 32: GTA5.exe reached this exact point with c0000008 while the
+     * parent opened the same steam_api64.dll successfully. The lower file
+     * layer recovery did not show up in that device run. Give the loader two
+     * fresh, real NtOpenFile attempts before a transient shared-fd race becomes
+     * STATUS_DLL_NOT_FOUND/c0000135. Only INVALID_HANDLE and the two targeted
+     * DLL names use this path; every other status keeps normal Wine semantics. */
+    if (ios_diag && status == STATUS_INVALID_HANDLE)
+    {
+        unsigned int attempt;
+        for (attempt = 1; attempt <= 2 && status == STATUS_INVALID_HANDLE; attempt++)
+        {
+            handle = 0;
+            io.Status = 0;
+            io.Information = 0;
+            status = NtOpenFile( &handle, GENERIC_READ | SYNCHRONIZE, &attr, &io,
+                                 FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                 FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE );
+            ERR( "[steam-handle] stage=NtOpenFile-retry attempt=%u tid=%04Ix peb=%p name=%s "
+                 "status=%08x handle=%p io=%08x rev=ml1142\n",
+                 attempt, (ULONG_PTR)NtCurrentTeb()->ClientId.UniqueThread, NtCurrentTeb()->Peb,
+                 debugstr_us(nt_name), (unsigned)status, handle, (unsigned)io.Status );
+        }
+    }
+#endif
     if (status)
     {
 """
@@ -264,4 +289,4 @@ if src.count(map_old) != 1:
 src = src.replace(map_old, map_new, 1)
 
 path.write_text(src)
-print(f"{path}: added passive steam_api64/d3d9 handle diagnostics")
+print(f"{path}: added steam_api64/d3d9 diagnostics + invalid-handle recovery")
