@@ -1062,6 +1062,26 @@ static void *wine_process_thread(void *arg) {
                 }
                 setenv("SteamGameId", "1293830", 1);
                 setenv("SteamAppId",  "1293830", 1);
+
+                /* FH4 spin-loop workaround (2026-10-04).
+                 *
+                 * The build-40 trace proves steam_api64 now opens/maps correctly,
+                 * but the game then burns one core forever in the same x64 block
+                 * (ForzaHorizon4.exe+0x3049780).  The generated host loop uses
+                 * LDAPRB for the byte TSO poll because this device advertises
+                 * FEAT_LRCPC.  Force FEX down its stronger LDAR acquire path for
+                 * this title only.  Keep TSO explicitly enabled so the fallback
+                 * remains x86-ordering-correct instead of turning the barrier
+                 * model off to hide the symptom.
+                 *
+                 * FEX accepts HostFeatures as a comma-separated override list.
+                 * disablelrcpc2 is included as well so a future device/build does
+                 * not silently select the immediate RCpc path for the same game. */
+                setenv("FEX_HOSTFEATURES", "disablelrcpc,disablelrcpc2", 1);
+                setenv("FEX_TSOENABLED", "1", 1);
+                dprintf(STDERR_FILENO,
+                        "[forza-fex] RCpc disabled for FH4; forcing LDAR TSO acquire path\n");
+
                 dprintf(STDERR_FILENO, "[steam-env] Forza Horizon 4 launch: Steam identity 1293830 published\n");
             } else if (gta_launch) {
                 /* GTA V must not inherit the historical Thumper fallback identity.
