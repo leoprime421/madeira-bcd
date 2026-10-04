@@ -367,11 +367,12 @@ jobs:
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
-      # GTA build 32 confirms the failure is the child's NtOpenFile itself.
-      # Keep the handle trace and add a loader-level last-resort retry for
-      # STATUS_INVALID_HANDLE on steam_api64.dll/d3d9.dll so a transient
-      # shared-fd race does not become c0000135 before GTA reaches its next stage.
-      - name: Patch Wine with steam handle recovery and diagnostics
+      # GTA build 33 proved retries cannot fix this: the launcher opens and
+      # maps steam_api64.dll, while the child returns STATUS_INVALID_HANDLE on
+      # every NtOpenFile. Preserve a duplicated host fd from the successful
+      # launcher open and turn it into a fresh Wine handle in the child's own
+      # wineserver handle table before NtCreateSection.
+      - name: Patch Wine with GTA parent-fd bridge and steam diagnostics
         run: python3 tools/patch-wine-steam-handle-diag.py wine/dlls/ntdll/loader.c
 
       # GTA stale-alias test: patcher uses Mach vm_page_mask here because
