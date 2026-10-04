@@ -342,10 +342,17 @@ static void call_req_handler( struct thread *thread )
     unsigned long wait_probe = 0;
     if (req == REQ_select) {
         wait_probe = ++wait_probe_seq;
-        if (wait_probe <= 4 || !(wait_probe % 131072))
-            fprintf( stderr, "[wait-probe] enter seq=%lu tid=%04x timeout=%lld flags=0x%x size=%u\n",
+        if (wait_probe <= 4 || !(wait_probe % 131072)) {
+            const union apc_result *prev = get_req_data();
+            const union select_op *op = prev ? (const union select_op *)(prev + 1) : NULL;
+            unsigned opcode = op ? (unsigned)op->op : 0xffffffffu;
+            unsigned h0 = op && thread->req.select_request.size >= 12 ? op->wait.handles[0] : 0;
+            unsigned h1 = op && thread->req.select_request.size >= 12 ? op->wait.handles[1] : 0;
+            fprintf( stderr, "[wait-probe] enter seq=%lu tid=%04x timeout=%lld flags=0x%x size=%u op=%u handles=%x,%x\n",
                      wait_probe, thread->id, (long long)thread->req.select_request.timeout,
-                     thread->req.select_request.flags, thread->req.select_request.size );
+                     thread->req.select_request.flags, thread->req.select_request.size,
+                     opcode, h0, h1 );
+        }
     }
 
     if (req < REQ_NB_REQUESTS)
