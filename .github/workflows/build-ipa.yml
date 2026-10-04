@@ -367,13 +367,12 @@ jobs:
       - name: Patch Wine with ARM64EC TLS diagnostics
         run: python3 tools/patch-wine-arm64ec-tls-diag.py wine/dlls/ntdll/loader.c
 
-      # GTA build 33 proved retries cannot fix this. Build 35 carries the
-      # corrected ARM64EC guard for the parent-fd bridge: the launcher opens and
-      # maps steam_api64.dll, while the child returns STATUS_INVALID_HANDLE on
-      # every NtOpenFile. Preserve a duplicated host fd from the successful
-      # launcher open and turn it into a fresh Wine handle in the child's own
-      # wineserver handle table before NtCreateSection.
-      - name: Patch Wine with GTA parent-fd bridge and steam diagnostics
+      # GTA build 35 proved the parent-fd bridge fixes steam_api64.dll:
+      # the child imported the preserved fd, created a valid handle, and mapped
+      # the DLL successfully. Its DllMain then failed because socialclub.dll hit
+      # the same STATUS_INVALID_HANDLE path. Generalize the proven bridge to
+      # steam_api64.dll, socialclub.dll and steam_api_ext64.dll.
+      - name: Patch Wine with generalized GTA parent-fd bridge
         run: python3 tools/patch-wine-steam-handle-diag.py wine/dlls/ntdll/loader.c
 
       # GTA stale-alias test: patcher uses Mach vm_page_mask here because
