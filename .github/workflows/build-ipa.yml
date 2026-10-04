@@ -347,6 +347,13 @@ jobs:
       - name: Patch wine with the guest file trace
         run: python3 tools/patch-wine-file-trace.py wine/dlls/ntdll/unix/file.c
 
+      # GTA build 31: child NtOpenFile(steam_api64.dll) returned
+      # STATUS_INVALID_HANDLE before a file handle existed. Madeira's server and
+      # clients share one host fd table, so recover one transient fd-reuse race
+      # without changing any non-EBADF/file-open semantics.
+      - name: Patch Wine with iOS invalid-handle open recovery
+        run: python3 tools/patch-wine-ios-invalid-handle-retry.py wine/dlls/ntdll/unix/file.c
+
       - name: Patch Wine with targeted steam_api64 init tracing
         run: python3 tools/patch-wine-steam-init-trace.py wine/dlls/ntdll/loader.c
 
