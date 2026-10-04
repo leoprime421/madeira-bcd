@@ -1029,21 +1029,26 @@ static void *wine_process_thread(void *arg) {
             setenv("SteamGameId", direct_app, 1);
             setenv("SteamAppId",  direct_app, 1);
             dprintf(STDERR_FILENO, "[steam-start] direct start: the game's own Steam identity (app %s) published\n", direct_app);
-        } else if (madeira_exe &&
-            (strstr(madeira_exe, "GTAVLauncher.exe") ||
-             strstr(madeira_exe, "PlayGTAV.exe") ||
-             strstr(madeira_exe, "GTA5.exe") ||
-             strstr(madeira_exe, "GTA5_Enhanced.exe"))) {
-            /* GTA V must not inherit the historical Thumper fallback identity.
-             * Direct Steam-library metadata above still wins when available. */
-            setenv("SteamAppPath", "C:\\Program Files\\gta v", 1);
-            setenv("SteamGameId", "271590", 1);
-            setenv("SteamAppId",  "271590", 1);
-            dprintf(STDERR_FILENO, "[steam-env] GTA V launch: Steam identity 271590 published\n");
         } else {
-            setenv("SteamAppPath", "C:\\Program Files\\Thumper", 1);
-            setenv("SteamGameId", "356400", 1);
-            setenv("SteamAppId",  "356400", 1);
+            const char *launch_exe = getenv("MADEIRA_EXE");
+            int gta_launch = launch_exe &&
+                (strstr(launch_exe, "GTAVLauncher.exe") ||
+                 strstr(launch_exe, "PlayGTAV.exe") ||
+                 strstr(launch_exe, "GTA5.exe") ||
+                 strstr(launch_exe, "GTA5_Enhanced.exe"));
+
+            if (gta_launch) {
+                /* GTA V must not inherit the historical Thumper fallback identity.
+                 * Direct Steam-library metadata above still wins when available. */
+                setenv("SteamAppPath", "C:\\Program Files\\gta v", 1);
+                setenv("SteamGameId", "271590", 1);
+                setenv("SteamAppId",  "271590", 1);
+                dprintf(STDERR_FILENO, "[steam-env] GTA V launch: Steam identity 271590 published\n");
+            } else {
+                setenv("SteamAppPath", "C:\\Program Files\\Thumper", 1);
+                setenv("SteamGameId", "356400", 1);
+                setenv("SteamAppId",  "356400", 1);
+            }
         }
         unsetenv("MADEIRA_STEAM_APPID");
         unsetenv("MADEIRA_STEAM_APPPATH");
