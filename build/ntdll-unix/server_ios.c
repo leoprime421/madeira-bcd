@@ -792,6 +792,35 @@ static void ios_thread_sampler_pass(int burst)
                 n += snprintf(line + n, sizeof(line) - n, " ]");
             }
             wine_log_write("%s", line);
+            /* madeira-bcd ml1172: the next FH4 hang no longer resolves to a
+             * guest RIP, so preserve the FEX state and host JIT instruction
+             * bytes for high-CPU samples. This lets the next log distinguish
+             * a translated guest spin from a Wine/FEX callback loop. */
+            if (running && bi.cpu_usage >= 800) {
+                uint32_t hot[8]; uint64_t hot_base = pc & ~0xfull;
+                if (ios_ts_read(hot_base, hot, sizeof(hot))) {
+                    char detail[1024]; int d = snprintf(detail, sizeof(detail),
+                        "[thread-hot] ml1172 pc=0x%llx x28=0x%llx x17=0x%llx x23=0x%llx teb=0x%llx bb=0x%llx host+0x%x:",
+                        (unsigned long long)pc, (unsigned long long)x28,
+                        (unsigned long long)x17, (unsigned long long)x23,
+                        (unsigned long long)x18, (unsigned long long)bb,
+                        (unsigned)(pc - hot_base));
+                    for (i = 0; i < 8 && d < (int)sizeof(detail) - 16; i++)
+                        d += snprintf(detail + d, sizeof(detail) - d, " %08x", hot[i]);
+                    d += snprintf(detail + d, sizeof(detail) - d, " callret=[");
+                    for (i = 0; have_cr && i < 16 && d < (int)sizeof(detail) - 80; i += 2) {
+                        uint64_t g = cr[i];
+                        if (!g) break;
+                        mn = ios_ts_mod_for(mp, g, &rva);
+                        if (mn) d += snprintf(detail + d, sizeof(detail) - d,
+                            " %s+0x%llx", mn, (unsigned long long)rva);
+                        else d += snprintf(detail + d, sizeof(detail) - d,
+                            " 0x%llx", (unsigned long long)g);
+                    }
+                    snprintf(detail + d, sizeof(detail) - d, " ]");
+                    wine_log_write("%s", detail);
+                }
+            }
             printed++;
         }
     }
