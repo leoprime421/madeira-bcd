@@ -1195,25 +1195,23 @@ jobs:
         continue-on-error: true
         run: bash tools/build-wine-extra-dlls.sh "$GITHUB_WORKSPACE/wine/build-native"
 
-      # loader.c is PE-side code. Patching the source alone is not enough because
-      # the repository normally ships a prebuilt arm64ec ntdll.dll. Rebuild it
-      # here so diagnostics such as [steam-init] are actually present in the IPA.
-      - name: Rebuild ARM64EC ntdll with steam init trace
+      # The app ships a prebuilt arm64ec ntdll.dll. Rebuild it with both the
+      # Steam/Social Club trace and the executable-protect callback fix so the
+      # FEX notification path does not depend on a version-sensitive binary patch.
+      - name: Rebuild ARM64EC ntdll with startup and protect fixes
         shell: bash
         run: |
-          # A restored wine/build-arm64ec cache can contain loader.o newer than
-          # the freshly patched source. Touch the source so make cannot reuse it.
-          touch wine/dlls/ntdll/loader.c
+          python3 tools/patch-wine-execreq-leave.py wine/dlls/ntdll/signal_arm64ec.c
+          # The Wine cache may hold objects newer than these patched sources.
+          touch wine/dlls/ntdll/loader.c wine/dlls/ntdll/signal_arm64ec.c
           bash build/wine-pe/build-ntdll.sh
-          # Do not use `strings | grep -q` under pipefail: grep exits as soon
-          # as it finds the marker, then strings receives SIGPIPE and the
-          # pipeline is reported as failed even though the marker WAS found.
-          # Search the binary directly instead.
-          if ! grep -aFq '[steam-init]' app/Madeira/arm64ec-windows/ntdll.dll || ! grep -aFq '[socialclub-init]' app/Madeira/arm64ec-windows/ntdll.dll; then
-            echo "::error::rebuilt ntdll.dll lacks Steam or Social Club init tracing"
+          # Search the binary directly: strings | grep -q can trip pipefail when
+          # grep exits early and strings receives SIGPIPE.
+          if ! grep -aFq '[steam-init]' app/Madeira/arm64ec-windows/ntdll.dll || ! grep -aFq '[socialclub-init]' app/Madeira/arm64ec-windows/ntdll.dll || ! grep -aFq '[exec-req-leave-source]' app/Madeira/arm64ec-windows/ntdll.dll; then
+            echo "::error::rebuilt ntdll.dll is missing a required startup/protect fix marker"
             exit 1
           fi
-          echo "::notice::ARM64EC ntdll contains Steam and Social Club init tracing"
+          echo "::notice::ARM64EC ntdll contains startup tracing and executable-protect callback fix"
 
       - name: Save wine arm64ec build
         if: steps.wineeccache.outputs.cache-hit != 'true' && hashFiles('wine/build-arm64ec/dlls/msvcr80/arm64ec-windows/msvcr80.dll') != ''
