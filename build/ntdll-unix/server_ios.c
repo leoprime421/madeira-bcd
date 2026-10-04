@@ -3351,6 +3351,49 @@ static inline unsigned int handle_to_index( HANDLE handle, unsigned int *entry )
     return idx % FD_CACHE_BLOCK_SIZE;
 }
 
+#ifdef WINE_IOS
+/* GTA V steam_api64 diagnostic.
+ *
+ * Passive snapshot only: this NEVER asks the server for an fd and never adds
+ * anything to the cache. Calling wine_server_handle_to_fd() from a probe would
+ * itself populate the cache and could hide the stale/missing-handle bug.
+ *
+ * We log cache misses that naturally flow through server_get_unix_fd(). The
+ * PE loader separately logs the Windows handle for steam_api64.dll and d3d9.dll,
+ * so the two traces can be joined by handle value.
+ */
+static void ios_fd_cache_diag_snapshot( HANDLE handle, const char *stage, NTSTATUS ret,
+                                        int fd, unsigned int wanted_access )
+{
+    static volatile int count;
+    struct ios_fd_cache *c;
+    union fd_cache_entry snap;
+    union fd_cache_entry *block = NULL;
+    unsigned int entry, idx;
+    int n;
+
+    n = __sync_add_and_fetch( &count, 1 );
+    if (n > 700) return;  /* bounded but high enough to reach GTA5.exe imports */
+
+    c = ios_get_fd_cache();
+    idx = handle_to_index( handle, &entry );
+    snap.data = 0;
+    if (entry < FD_CACHE_ENTRIES && c->blocks[entry])
+    {
+        block = c->blocks[entry];
+        snap.data = InterlockedCompareExchange64( &block[idx].data, 0, 0 );
+    }
+
+    dprintf( 2, "[fd-cache-diag] #%d stage=%s tid=%04x peb=%p handle=%p wanted=0x%x "
+                "entry=%u idx=%u block=%p raw=0x%llx stored=%d type=%u access=0x%x "
+                "options=0x%x ret=%08x fd=%d\n",
+             n, stage, (unsigned int)GetCurrentThreadId(), ios_jit_current_peb(), handle,
+             wanted_access, entry, idx, block, (unsigned long long)snap.data,
+             (int)snap.s.fd, (unsigned int)snap.s.type, (unsigned int)snap.s.access,
+             (unsigned int)snap.s.options, (unsigned int)ret, fd );
+}
+#endif
+
 
 /***********************************************************************
  *           add_fd_to_cache
@@ -3454,10 +3497,18 @@ int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
     wanted_access &= FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA;
 
     ret = get_cached_fd( handle, &fd, type, &access, options );
+#ifdef WINE_IOS
+    if (ret == STATUS_INVALID_HANDLE && (wanted_access & FILE_READ_DATA))
+        ios_fd_cache_diag_snapshot( handle, "local-miss", ret, fd, wanted_access );
+#endif
     if (ret != STATUS_INVALID_HANDLE) goto done;
 
     server_enter_uninterrupted_section( &fd_cache_mutex, &sigset );
     ret = get_cached_fd( handle, &fd, type, &access, options );
+#ifdef WINE_IOS
+    if (ret == STATUS_INVALID_HANDLE && (wanted_access & FILE_READ_DATA))
+        ios_fd_cache_diag_snapshot( handle, "locked-miss", ret, fd, wanted_access );
+#endif
     if (ret == STATUS_INVALID_HANDLE)
     {
         SERVER_START_REQ( get_handle_fd )
@@ -3501,10 +3552,18 @@ int server_get_unix_fd( HANDLE handle, unsigned int wanted_access, int *unix_fd,
             }
         }
         SERVER_END_REQ;
+#ifdef WINE_IOS
+        if (wanted_access & FILE_READ_DATA)
+            ios_fd_cache_diag_snapshot( handle, "server-result", ret, fd, wanted_access );
+#endif
     }
     server_leave_uninterrupted_section( &fd_cache_mutex, &sigset );
 
 done:
+#ifdef WINE_IOS
+    if (ret && (wanted_access & FILE_READ_DATA))
+        ios_fd_cache_diag_snapshot( handle, "done-error", ret, fd, wanted_access );
+#endif
     if (!ret && ((access & wanted_access) != wanted_access))
     {
         ret = STATUS_ACCESS_DENIED;
