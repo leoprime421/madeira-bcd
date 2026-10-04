@@ -40,7 +40,7 @@ new = """            else if (pNotifyMemoryProtect
             {
                 static int execreq_leave_logged;
                 if (!execreq_leave_logged++)
-                    ERR( "[exec-req-leave-source] cleared callback after executable protect\n" );
+                    ERR( "[exec-req-leave-source] cleared callback after executable protect\\n" );
             }
             return st;"""
 function = function.replace(old, new, 1)
