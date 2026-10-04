@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [".github/workflows/build-ipa.yml", "build/dxmt-ios/build.sh", "build/dxmt-ios/apply-geometry-siv-fix.py"]
+    paths: [".github/workflows/build-ipa.yml", "app/Madeira/WineProcessBridge.m", "build/dxmt-ios/build.sh", "build/dxmt-ios/apply-geometry-siv-fix.py"]
 
 # A push and a manual dispatch seconds apart used to start two parallel
 # multi-hour macOS jobs on the same commit.
