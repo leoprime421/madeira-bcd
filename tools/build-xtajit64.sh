@@ -182,7 +182,7 @@ else
     echo "::notice::xtajit64.dll contains no ldr xN,[x18,#0x58] accesses"
 fi
 
-git -C FEX checkout -- "$CPUF" Source/Windows/Common/CPUFeatures.cpp Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
+git -C FEX checkout -- "$CPUF" Source/Windows/ARM64EC/Module.cpp Source/Windows/Common/InvalidationTracker.h Source/Windows/Common/InvalidationTracker.cpp FEXCore/Source/Interface/IR/PassManager.cpp Source/Windows/Common/Priv.h FEXCore/Source/Interface/Core/CPUID.cpp FEXCore/include/FEXCore/Utils/AllocatorHooks.h FEXCore/Source/Interface/Core/CPUBackend.h FEXCore/Source/Interface/Core/CPUBackend.cpp FEXCore/Source/Utils/AllocWatch.cpp
 cp "$B/Bin/libarm64ecfex.dll" "$SHIP"
 cp "$B/Bin/libarm64ecfex.dll" "$AVX"
 echo "::notice::xtajit64.dll (and xtajit64-avx.dll) built from FEX $(git -C FEX rev-parse --short HEAD) with the map-notification and IntervalsLock self-deadlock fixes, IRCapRIP out of the game's TLS, the TSD-slot TEB for the WinAPI shims, the CPUID index wrap, and the MADEIRA_FEX_AVX opt-in, and shipped"
