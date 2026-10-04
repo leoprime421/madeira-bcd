@@ -66,22 +66,24 @@ repl2 = r"""        name_hidden = is_hidden_file( unix_name );
                                  sharing, disposition, options, ea_buffer, ea_length );
 #ifdef WINE_IOS
         /* Madeira's in-process wineserver shares the native fd table with all
-         * pseudo-processes. If the server reports INVALID_HANDLE for an existing
-         * regular file, retry the same create_file request once with a fresh
-         * server-side fd. This preserves access/share/options and does not
-         * fabricate a handle locally. */
-        if (status == STATUS_INVALID_HANDLE && disposition == FILE_OPEN &&
-            !new_attr.RootDirectory && unix_name)
+         * pseudo-processes. Build 32 proved that STATUS_INVALID_HANDLE can escape
+         * the first recovery on GTA5.exe's steam_api64.dll open. At this point
+         * path translation already succeeded, so replay the real create_file
+         * request up to twice regardless of RootDirectory/stat shape. A genuinely
+         * invalid root/handle simply returns the same status; no success is
+         * fabricated and all access/share/options are preserved. */
+        if (status == STATUS_INVALID_HANDLE && disposition == FILE_OPEN)
         {
-            struct stat retry_st;
-            if (!stat( unix_name, &retry_st ) && S_ISREG( retry_st.st_mode ))
+            unsigned int attempt;
+            for (attempt = 1; attempt <= 2 && status == STATUS_INVALID_HANDLE; attempt++)
             {
                 *handle = 0;
                 status = open_unix_file( handle, unix_name, access, &new_attr, attributes,
                                          sharing, disposition, options, ea_buffer, ea_length );
-                dprintf( 2, "[ios-open-retry] stage=create tid=%04x status=%08x handle=%p unix=%s rev=ml1140\n",
-                         (unsigned int)GetCurrentThreadId(), (unsigned int)status,
-                         *handle, unix_name );
+                dprintf( 2, "[ios-open-retry] stage=create attempt=%u tid=%04x status=%08x "
+                         "handle=%p root=%p unix=%s rev=ml1141\n",
+                         attempt, (unsigned int)GetCurrentThreadId(), (unsigned int)status,
+                         *handle, new_attr.RootDirectory, unix_name );
             }
         }
 
