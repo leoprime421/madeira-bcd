@@ -354,7 +354,7 @@ jobs:
       - name: Patch Wine with strengthened iOS invalid-handle open recovery
         run: python3 tools/patch-wine-ios-invalid-handle-retry.py wine/dlls/ntdll/unix/file.c
 
-      - name: Patch Wine with targeted steam_api64 init tracing
+      - name: Patch Wine with Steam and Social Club init tracing
         run: python3 tools/patch-wine-steam-init-trace.py wine/dlls/ntdll/loader.c
 
       # GTA ARM64EC bootstrap diagnostic: compare TEB+0x58 and TLS bitmap in
@@ -1209,11 +1209,11 @@ jobs:
           # as it finds the marker, then strings receives SIGPIPE and the
           # pipeline is reported as failed even though the marker WAS found.
           # Search the binary directly instead.
-          if ! grep -aFq '[steam-init]' app/Madeira/arm64ec-windows/ntdll.dll; then
-            echo "::error::rebuilt ntdll.dll does not contain [steam-init] -- refusing to spend time archiving an uninstrumented IPA"
+          if ! grep -aFq '[steam-init]' app/Madeira/arm64ec-windows/ntdll.dll || ! grep -aFq '[socialclub-init]' app/Madeira/arm64ec-windows/ntdll.dll; then
+            echo "::error::rebuilt ntdll.dll lacks Steam or Social Club init tracing"
             exit 1
           fi
-          echo "::notice::ARM64EC ntdll contains the steam init tracer"
+          echo "::notice::ARM64EC ntdll contains Steam and Social Club init tracing"
 
       - name: Save wine arm64ec build
         if: steps.wineeccache.outputs.cache-hit != 'true' && hashFiles('wine/build-arm64ec/dlls/msvcr80/arm64ec-windows/msvcr80.dll') != ''

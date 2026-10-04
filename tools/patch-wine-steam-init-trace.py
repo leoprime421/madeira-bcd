@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Add narrow diagnostics around steam_api64.dll's DLL_PROCESS_ATTACH.
+"""Add narrow diagnostics around Steam and Social Club DLL_PROCESS_ATTACH.
 
 The trace is intentionally diagnostic-only: it does not change a DLL return
 value, Steam state, or loader semantics. While steam_api64.dll is inside its
@@ -12,10 +12,12 @@ import sys
 p = Path(sys.argv[1] if len(sys.argv) > 1 else "wine/dlls/ntdll/loader.c")
 s = p.read_text()
 
-marker = "/* madeira-bcd steam-init trace rev=3 */"
+marker = "/* madeira-bcd steam-init trace rev=4 */"
 if marker in s:
     print("steam-init trace: already patched")
     raise SystemExit(0)
+if "/* madeira-bcd steam-init trace rev=3 */" in s:
+    raise SystemExit("steam-init trace: old patch already present; start with a clean Wine checkout")
 
 anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID lpReserved )
 {
@@ -23,7 +25,7 @@ anchor = """static NTSTATUS MODULE_InitDLL( WINE_MODREF *wm, UINT reason, LPVOID
 if anchor not in s:
     raise SystemExit("steam-init trace: MODULE_InitDLL anchor not found")
 
-prefix = """/* madeira-bcd steam-init trace rev=3 */
+prefix = """/* madeira-bcd steam-init trace rev=4 */
 #ifdef __arm64ec__
 static int steam_init_trace_depth;
 static unsigned int steam_init_trace_ops;
@@ -38,6 +40,17 @@ static int steam_init_trace_module( const WINE_MODREF *wm )
     RtlInitUnicodeString( &wanted, steam_name );
     return RtlEqualUnicodeString( &name, &wanted, TRUE );
 }
+
+static int socialclub_init_trace_module( const WINE_MODREF *wm )
+{
+    static const WCHAR socialclub_name[] = L"socialclub.dll";
+    UNICODE_STRING name, wanted;
+
+    if (!wm || !wm->ldr.BaseDllName.Buffer) return 0;
+    name = wm->ldr.BaseDllName;
+    RtlInitUnicodeString( &wanted, socialclub_name );
+    return RtlEqualUnicodeString( &name, &wanted, TRUE );
+}
 #endif
 
 """
@@ -50,6 +63,7 @@ locals_anchor = """    BOOL retv = FALSE;
 """
 locals_new = locals_anchor + """#ifdef __arm64ec__
     int steam_trace = 0;
+    int socialclub_trace = 0;
 #endif
 """
 if locals_anchor not in s:
@@ -65,6 +79,10 @@ old = """    __TRY
 """
 new = """#ifdef __arm64ec__
     steam_trace = (reason == DLL_PROCESS_ATTACH && steam_init_trace_module( wm ));
+    socialclub_trace = (reason == DLL_PROCESS_ATTACH && socialclub_init_trace_module( wm ));
+    if (socialclub_trace)
+        ERR( "[socialclub-init] ENTER module=%p entry=%p reserved=%p tls=%hd flags=%08lx\\n",
+             module, entry, lpReserved, wm->ldr.TlsIndex, wm->ldr.Flags );
     if (steam_trace)
     {
         steam_init_trace_depth++;
@@ -92,6 +110,9 @@ endtry = """    __ENDTRY
 endtry_new = """    __ENDTRY
 
 #ifdef __arm64ec__
+    if (socialclub_trace)
+        ERR( "[socialclub-init] LEAVE module=%p entry=%p retval=%d status=%08lx\\n",
+             module, entry, retv, status );
     if (steam_trace)
     {
         ERR( "[steam-init] LEAVE module=%p entry=%p retval=%d status=%08lx ops=%u\\n",
