@@ -224,8 +224,9 @@ open_new = r"""    InitializeObjectAttributes( &attr, nt_name, OBJ_CASE_INSENSIT
                  debugstr_us(nt_name), (unsigned)status, handle );
         }
     }
-#ifdef __arm64ec__
-    /* Build 32: GTA5.exe reached this exact point with c0000008 while the
+    /* Build 33 confirmed the parent-fd bridge is the primary recovery. Keep
+     * two direct retries only as a fallback when no inherited bridge fd exists. */
+    /* GTA5.exe reached this exact point with c0000008 while the
      * parent opened the same steam_api64.dll successfully. The lower file
      * layer recovery did not show up in that device run. Give the loader two
      * fresh, real NtOpenFile attempts before a transient shared-fd race becomes
