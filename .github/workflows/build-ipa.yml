@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [".github/workflows/build-ipa.yml", "app/Madeira/WineProcessBridge.m", "app/Madeira/StikJITHelper.swift", "tools/patch-wine-execreq-leave.py", "build/ntdll-unix/server_ios.c", "build/ntdll-unix/loader_ios.c", "build/wineserver/request_ios.c", "tools/build-xtajit64.sh", "tools/patch-fex-ios-rcpc.py", "madeira-d3d12/src/pe/madeira_d3d12.c", "build/dxmt-ios/build.sh", "build/dxmt-ios/apply-geometry-siv-fix.py"]
+    paths: [".github/workflows/build-ipa.yml", "app/Madeira/WineProcessBridge.m", "app/Madeira/StikJITHelper.swift", "tools/patch-wine-execreq-leave.py", "build/ntdll-unix/server_ios.c", "build/ntdll-unix/loader_ios.c", "build/ntdll-unix/process_ios.c", "build/wineserver/request_ios.c", "tools/build-xtajit64.sh", "tools/patch-fex-ios-rcpc.py", "madeira-d3d12/src/pe/madeira_d3d12.c", "build/dxmt-ios/build.sh", "build/dxmt-ios/apply-geometry-siv-fix.py"]
 
 # A push and a manual dispatch seconds apart used to start two parallel
 # multi-hour macOS jobs on the same commit.

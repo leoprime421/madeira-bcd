@@ -1131,6 +1131,43 @@ static const char *child_extra_args( const char *spec, const WCHAR *image, int i
     return spec;
 }
 
+/* madeira-bcd: Forza Horizon 4 embeds CEF in the game itself and starts
+ * ForzaWebHelper.exe for its GPU and utility children. Since build 72 those
+ * start and stay alive, yet no --type=renderer ever follows and the pause
+ * menu stays a blurred backdrop (device log 2026-10-05 09:29). Chromium's own
+ * log is the only thing that can say why, so every ForzaWebHelper.exe child
+ * gets its own C:\fh4_cef_<n>_<type>.log (picked up by the *.log mirror,
+ * MADEIRA_GUEST_LOG) unless the game already passes the switch itself.
+ * Writes " --enable-logging --log-severity=info --log-file=... [--v=1]" to
+ * `out` (`cap` bytes with the NUL) and returns its length, or 0 when `image`
+ * is not ForzaWebHelper.exe, `cl` has no --type= or `out` is too small. */
+static int fh4_cef_child_args( const WCHAR *image, int image_len, const WCHAR *cl, int cl_len,
+                               unsigned int serial, char *out, int cap )
+{
+    char type[24];
+    int t = sc_switch_end( cl, cl_len, "--type=" ), n = 0, o;
+
+    if (!sc_image_is( image, image_len, "forzawebhelper.exe" ) || t < 0) return 0;
+    while (t + n < cl_len && n < (int)sizeof(type) - 1)
+    {
+        WCHAR c = cl[t + n];
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_')) break;
+        type[n++] = (char)c;
+    }
+    if (!n) return 0;
+    type[n] = 0;
+    o = 0;
+    if (sc_switch_end( cl, cl_len, "--enable-logging" ) < 0)
+        o += snprintf( out + o, cap - o, " --enable-logging" );
+    if (o < cap && sc_switch_end( cl, cl_len, "--log-severity=" ) < 0)
+        o += snprintf( out + o, cap - o, " --log-severity=info" );
+    if (o < cap && sc_switch_end( cl, cl_len, "--log-file=" ) < 0)
+        o += snprintf( out + o, cap - o, " --log-file=C:\\fh4_cef_%u_%s.log", serial, type );
+    if (o < cap && !strcmp( type, "gpu-process" ) && sc_switch_end( cl, cl_len, "--v=" ) < 0)
+        o += snprintf( out + o, cap - o, " --v=1" );
+    return o < cap ? o : 0;
+}
+
 /* The browser's new command line, written to `out` (`cap` WCHARs with the
  * NUL): `cl` with PartitionAllocBackupRefPtr put first in its last
  * --disable-features= list (Chromium uses only the last one; a second switch
@@ -1709,6 +1746,31 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                         dprintf(2, "[proc-gate] cmdline-tail(ml428): ...%s\n", tail);
                     }
                 }
+            }
+        }
+    }
+
+    /* madeira-bcd: Forza Horizon 4's CEF children log to their own files -- see fh4_cef_child_args. */
+    {
+        static unsigned int fh4_cef_serial;
+        char add[160];
+        int n = fh4_cef_child_args( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR),
+                                    params->CommandLine.Buffer, params->CommandLine.Length / sizeof(WCHAR),
+                                    __atomic_add_fetch( &fh4_cef_serial, 1, __ATOMIC_RELAXED ), add, sizeof(add) );
+        if (n)
+        {
+            int cl_len = params->CommandLine.Length / sizeof(WCHAR), k;
+            WCHAR *nbuf = malloc( (cl_len + n + 1) * sizeof(WCHAR) );   /* leaks once per child, as below */
+
+            if (nbuf)
+            {
+                memcpy( nbuf, params->CommandLine.Buffer, cl_len * sizeof(WCHAR) );
+                for (k = 0; k < n; k++) nbuf[cl_len + k] = (WCHAR)(unsigned char)add[k];
+                nbuf[cl_len + n] = 0;
+                params->CommandLine.Buffer = nbuf;
+                params->CommandLine.Length = (cl_len + n) * sizeof(WCHAR);
+                params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
+                dprintf( 2, "[fh4-cef] ForzaWebHelper child #%u: appended \"%s\"\n", fh4_cef_serial, add );
             }
         }
     }

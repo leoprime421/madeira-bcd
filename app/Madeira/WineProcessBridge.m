@@ -1067,6 +1067,10 @@ static void *wine_process_thread(void *arg) {
              * enable the old layout-dependent binary patch here. */
             dprintf(STDERR_FILENO,
                     "[forza-fex] FH4 startup fixes enabled (no-RCpc, spin repair, source exec-protect callback fix)\n");
+            /* Chromium's own logs (C:\\fh4_cef_*.log, see fh4_cef_child_args) reach the session
+             * log through the *.log mirror. madeira.cfg env.* lines still win. */
+            setenv("MADEIRA_GUEST_LOG", "all", 0);
+            setenv("MADEIRA_GUEST_LOG_LIMIT", "4000", 0);
         }
         const char *direct_app = getenv("MADEIRA_STEAM_APPID");    /* set by the library for one direct Steam start (Start with: The game); not a setting */
         const char *direct_path = getenv("MADEIRA_STEAM_APPPATH"); /* that game's install folder, with MADEIRA_STEAM_APPID; not a setting */
@@ -1746,6 +1750,20 @@ static void *wine_process_thread(void *arg) {
         argv[argc++] = "wine";
         argv[argc++] = exe_path;
         for (int i = 0; i < extra_argc; i++) argv[argc++] = extra_argv[i];
+        /* FH4 embeds CEF in the game process; its browser log shows why no renderer is
+         * started. The children get theirs from NtCreateUserProcess (fh4_cef_child_args). */
+        if (fex_forza4_launch) {
+            static char *cef_log_flags[] = {
+                "--enable-logging", "--log-severity=info", "--log-file=C:\\fh4_cef_browser.log"
+            };
+            for (unsigned k = 0; k < sizeof(cef_log_flags) / sizeof(cef_log_flags[0]); k++) {
+                int present = 0;
+                size_t sw = strchr(cef_log_flags[k], '=') ? (size_t)(strchr(cef_log_flags[k], '=') - cef_log_flags[k]) : strlen(cef_log_flags[k]);
+                for (int j = 2; j < argc; j++)
+                    if (!strncmp(argv[j], cef_log_flags[k], sw)) { present = 1; break; }
+                if (!present) argv[argc++] = cef_log_flags[k];
+            }
+        }
         argv[argc] = NULL;
         dprintf(STDERR_FILENO, "[WineProc] argv[1] = %s\n", exe_path);
         for (int i = 0; i < extra_argc; i++) {
