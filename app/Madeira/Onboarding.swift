@@ -242,6 +242,7 @@ struct OnboardingView: View {
                     .font(.subheadline).foregroundStyle(.secondary)
                 if dock.preparing {
                     HStack(spacing: 12) { ProgressView(); Text(dock.progress).foregroundStyle(.secondary) }
+                    secondary("Cancel download") { dock.cancelPreparation() }
                 } else {
                     if let error = dock.error {
                         Label(error, systemImage: "exclamationmark.circle.fill").foregroundStyle(.red)
