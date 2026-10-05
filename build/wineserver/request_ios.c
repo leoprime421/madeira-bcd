@@ -343,16 +343,41 @@ static void call_req_handler( struct thread *thread )
     if (req == REQ_select) {
         wait_probe = ++wait_probe_seq;
         if (wait_probe <= 4 || !(wait_probe % 131072)) {
+            union select_op decoded;
             const union apc_result *prev = get_req_data();
-            const union select_op *op = prev ? (const union select_op *)(prev + 1) : NULL;
-            unsigned opcode = op ? (unsigned)op->op : 0xffffffffu;
-            unsigned h0 = op && thread->req.select_request.size >= 12 ? op->wait.handles[0] : 0;
-            unsigned h1 = op && thread->req.select_request.size >= 12 ? op->wait.handles[1] : 0;
+            data_size_t size = thread->req.select_request.size;
+            unsigned opcode = 0xffffffffu, h0 = 0, h1 = 0;
+            memset( &decoded, 0, sizeof(decoded) );
+            if (prev && get_req_data_size() >= sizeof(*prev) &&
+                size <= get_req_data_size() - sizeof(*prev) && size >= sizeof(decoded.op))
+            {
+                memcpy( &decoded, prev + 1, size < sizeof(decoded) ? size : sizeof(decoded) );
+                opcode = decoded.op;
+                if ((opcode == SELECT_WAIT || opcode == SELECT_WAIT_ALL) && size >= 12)
+                {
+                    h0 = decoded.wait.handles[0];
+                    h1 = decoded.wait.handles[1];
+                }
+            }
             fprintf( stderr, "[wait-probe] enter seq=%lu tid=%04x timeout=%lld flags=0x%x size=%u op=%u handles=%x,%x\n",
                      wait_probe, thread->id, (long long)thread->req.select_request.timeout,
                      thread->req.select_request.flags, thread->req.select_request.size,
                      opcode, h0, h1 );
         }
+    }
+
+    /* Observe timer programming without changing expiration or wait semantics.
+     * Sample both consecutive set_timer requests from the timerqueue. */
+    if (req == REQ_set_timer)
+    {
+        static unsigned long timer_probe_seq;
+        unsigned long seq = ++timer_probe_seq;
+        if (seq <= 16 || (seq % 262144) < 2)
+            fprintf( stderr, "[timer-probe] seq=%lu tid=%04x handle=%x expire=%lld period=%u mono=%lld wall=%lld\n",
+                     seq, thread->id, thread->req.set_timer_request.handle,
+                     (long long)thread->req.set_timer_request.expire,
+                     thread->req.set_timer_request.period,
+                     (long long)monotonic_time, (long long)current_time );
     }
 
     if (req < REQ_NB_REQUESTS)
