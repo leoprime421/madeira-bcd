@@ -649,7 +649,7 @@ enum StikJITHelper {
         }
 
         // madeira-bcd SPLIT POOL: `pool-split = 1` in the game's own file or in
-        // madeira.cfg. FH4 enables it by default; other titles remain opt-in.
+        // madeira.cfg. Off by default; nothing below runs without it.
         //
         // Executable memory can only come from the debugger and can only live in
         // the low band under the dyld shared region (0x180000000): everything from
@@ -666,20 +666,8 @@ enum StikJITHelper {
         // WINE_IOS_JIT_HOLE tells ntdll never to hand out the part in between.
         // Costs the second region's size in footprint (debugger-blessed pages are
         // dirty from birth) -- the total stays within the requested pool size.
-        // FH4's main process and ForzaWebHelper each load a large libcef PE.
-        // A stack-split 544MB region cannot hold both plus FEX code buffers.
-        // Use the existing two-region allocator, within the requested budget,
-        // unless the user explicitly configured pool-split for this launch.
-        let splitSetting = MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split")
-        let launchExe = ProcessInfo.processInfo.environment["MADEIRA_EXE"] ?? ""
-        let launchName = launchExe.replacingOccurrences(of: "\\", with: "/")
-            .split(separator: "/").last.map(String.init)?.lowercased() ?? ""
-        let forzaSplitDefault = launchName == "forzahorizon4.exe"
-        let splitValue = (splitSetting ?? (forzaSplitDefault ? "1" : "0"))
+        let splitValue = (MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split") ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        if splitSetting == nil && forzaSplitDefault {
-            LogStore.shared.log("[forza-pool] split allocation enabled: preserve executable capacity for ForzaWebHelper")
-        }
         poolHole = nil
         if ["1", "on", "true", "yes"].contains(splitValue) {
             if poolSize >= requestedPoolSize {
