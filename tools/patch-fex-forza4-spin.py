@@ -19,6 +19,11 @@ RW .detourd section, so that extra global side effect is too risky.
 For FH4 only, rewrite the same five instructions in-place so both paths publish
 the local wake byte, while the global store remains restricted to the original
 w20==0 path. The polling loop stays intact and no code size changes are made.
+
+The local wake is consumed by the same generated path immediately after the
+branch, so it does not need release semantics. Use STRB for that publication
+instead of STLRB. This keeps the global release store intact while avoiding the
+repeated iOS JIT SIGBUS seen at the local byte-store site after Continue.
 """
 import sys
 
@@ -66,12 +71,18 @@ injected = r'''#ifdef FEX_IOS_HOST
      *
      *   mov   w6,#1
      *   add   x7,x29,#0x2b0
-     *   stlrb w6,[x7]
+     *   strb  w6,[x7]
      *   b.ne  wait                  // +0x14 from I+4 to I+9
      *
-     * MOV/ADD/STLRB do not modify NZCV, so B.NE still consumes the flags from
+     * MOV/ADD/STRB do not modify NZCV, so B.NE still consumes the flags from
      * the original CMP. w20==0 therefore falls through to the original global
-     * writer; w20!=0 skips it and goes straight to the unchanged poll. */
+     * writer; w20!=0 skips it and goes straight to the unchanged poll.
+     *
+     * The wake byte is read by this same path immediately at wait. It does not
+     * publish any dependent data, so release ordering is unnecessary here.
+     * Keeping the original I+8 STLRB preserves ordering for the actual global
+     * publication, while the local store avoids the iOS JIT SIGBUS loop seen
+     * after Continue. */
     if (const char* FH4SpinFix = std::getenv("MADEIRA_FEX_FH4_SPIN_FIX");
         FH4SpinFix && FH4SpinFix[0] == '1') {
       auto* Words = reinterpret_cast<uint32_t*>(TempCodeBuffer);
@@ -93,10 +104,12 @@ injected = r'''#ifdef FEX_IOS_HOST
             Words[I + 11] == 0x72001d1fu && /* tst w8,#0xff */
             Words[I + 12] == 0x54ffffa0u && /* b.eq -0xc */
             Words[I + 13] == 0x71000289u) { /* subs w9,w20,#0 */
-          /* Move the local writer in front of the conditional branch. */
+          /* Move the local writer in front of the conditional branch. The
+           * local wake is same-path state, so use a plain byte store here;
+           * leave the original global release store at I+8 untouched. */
           Words[I + 1] = 0x52800026u; /* mov   w6,#1 */
           Words[I + 2] = 0x910ac3a7u; /* add   x7,x29,#0x2b0 */
-          Words[I + 3] = 0x089ffce6u; /* stlrb w6,[x7] */
+          Words[I + 3] = 0x390000e6u; /* strb  w6,[x7] */
           Words[I + 4] = 0x540000a1u; /* b.ne  +0x14 -> I+9 (wait) */
 
           static volatile uint32_t FH4SpinPatchCount = 0;
@@ -104,7 +117,7 @@ injected = r'''#ifdef FEX_IOS_HOST
           if (N <= 16) {
             LogMan::Msg::EFmt(
               "[fh4-spin] guarded-local repair #{} entry={:x} temp+0x{:x}: "
-              "local wake unconditional; global writer remains w20==0 rev=ml1152",
+              "local wake STRB unconditional; global STLRB remains w20==0 rev=ml1153",
               N, Entry, I * sizeof(uint32_t));
           }
         }
