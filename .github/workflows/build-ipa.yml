@@ -380,6 +380,34 @@ jobs:
       - name: Patch stale anonymous JIT alias lifetime
         run: python3 tools/patch-ntdll-jit-alias-release.py build/ntdll-unix/virtual_ios.c
 
+      - name: Fix pure x64 EXE write protection and restore opt-in split pool
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("build/ntdll-unix/virtual_ios.c")
+          s = p.read_text()
+          anchor = "static int ios_guest_image_is_host_data( const void *base, size_t size )"
+          old = "    if (!ios_wow_in_window( base )) return 0;\n    if (!(view = find_view( base, size ))) return 0;\n    return (view->protect & SEC_IMAGE) != 0;"
+          new = "    if (!(view = find_view( base, size ))) return 0;\n    if (!(view->protect & SEC_IMAGE)) return 0;\n    if (ios_wow_in_window( base )) return 1;\n    return ios_pure_x64_exe_image( view );"
+          helper = "/* Only pure AMD64 EXE backing is host data. DLLs and hybrid images may\n * contain native entry points even when their PE machine is AMD64. */\nstatic int ios_pure_x64_exe_image( const struct file_view *view )\n{\n    unsigned char hdr[264], sec[40];\n    unsigned int lfanew, sig, cfg_rva, cfg_size;\n    unsigned short machine, sections, optional_size, flags, magic;\n    uint64_t chpe;\n    size_t table, i;\n    mach_vm_size_t got;\n    uintptr_t image = (uintptr_t)view->base;\n#define READ_IMAGE(off, dst, len) \\\n    ((size_t)(off) <= view->size && (size_t)(len) <= view->size - (size_t)(off) && \\\n     mach_vm_read_overwrite( mach_task_self(), image + (size_t)(off), (len), \\\n                            (mach_vm_address_t)(dst), &got ) == KERN_SUCCESS && got == (len))\n    if (!READ_IMAGE(0x3c, &lfanew, 4) || !READ_IMAGE(lfanew, hdr, sizeof(hdr))) return 0;\n    memcpy(&sig, hdr, 4);\n    memcpy(&machine, hdr + 4, 2);\n    memcpy(&sections, hdr + 6, 2);\n    memcpy(&optional_size, hdr + 20, 2);\n    memcpy(&flags, hdr + 22, 2);\n    memcpy(&magic, hdr + 24, 2);\n    if (sig != 0x4550 || machine != 0x8664 || magic != 0x20b ||\n        !(flags & 2) || (flags & 0x2000) || optional_size < 240 ||\n        !sections || sections > 96) return 0;\n    table = (size_t)lfanew + 24 + optional_size;\n    for (i = 0; i < sections; ++i)\n    {\n        if (!READ_IMAGE(table + i * sizeof(sec), sec, sizeof(sec))) return 0;\n        if (!memcmp(sec, \".hexpthk\", 8) || !memcmp(sec, \".wowthk\", 7)) return 0;\n    }\n    /* IMAGE_LOAD_CONFIG_DIRECTORY64.CHPEMetadataPointer: offset 200. */\n    memcpy(&cfg_rva, hdr + 216, 4);\n    memcpy(&cfg_size, hdr + 220, 4);\n    if (cfg_rva && cfg_size >= 208)\n    {\n        if (!READ_IMAGE((size_t)cfg_rva + 200, &chpe, sizeof(chpe)) || chpe) return 0;\n    }\n#undef READ_IMAGE\n    return 1;\n}\n"
+          if s.count(anchor) != 1 or s.count(old) != 1:
+              raise SystemExit("Pure EXE write fix: source layout changed")
+          s = s.replace(anchor, helper + "\n" + anchor).replace(old, new)
+          s = s.replace("— 32-bit image page, ", "— translated image page, ")
+          p.write_text(s)
+          p = Path("app/Madeira/StikJITHelper.swift")
+          s = p.read_text()
+          old = "        let splitOverride = MadeiraConfig.gameValue(\"pool-split\") ?? MadeiraConfig.get(\"pool-split\")\n        let launchExe = getenv(\"MADEIRA_EXE\").map { String(cString: $0) } ?? \"\"\n        let launchName = launchExe.replacingOccurrences(of: \"\\\\\", with: \"/\")\n            .split(separator: \"/\").last.map(String.init)?.lowercased() ?? \"\"\n        // FH4's CEF children require additional image copies. Its loader now\n        // guards failed auxiliary initialization; preserve an explicit opt-out.\n        let splitValue = (splitOverride ?? (launchName == \"forzahorizon4.exe\" ? \"1\" : \"\"))\n            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()\n"
+          new = "        let splitValue = (MadeiraConfig.gameValue(\"pool-split\") ?? MadeiraConfig.get(\"pool-split\") ?? \"\")\n            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()\n"
+          if s.count(old) != 1:
+              raise SystemExit("Split-pool rollback: source layout changed")
+          s = s.replace(old, new)
+          s = s.replace("enabled for FH4's CEF children by default.", "opt-in through pool-split = 1.")
+          p.write_text(s)
+          print("Pure AMD64 EXE untrap enabled; DLL/hybrid execution preserved; split pool opt-in")
+          PY
+
       - name: Build ntdll-unix
         # Keep going so one run reports every broken stage (and caches FEX and
         # LLVM). "Verify all linked archives exist" still fails the job before
