@@ -41,6 +41,38 @@ _Thread_local pthread_t wine_ios_main_thread;
 _Thread_local int wine_ios_exit_initialized = 0;
 
 
+/* Keep emulator-facing C++ locale code native for FH4. The app-local MS
+ * x64 MSVCP140 bypasses the existing system32 overlay exemption and can
+ * re-enter FEX while its code-buffer lock is held. Preserve other overrides
+ * and restore our temporary setting before the next title's launch. */
+static int madeira_fh4_crt_override(int enable) {
+    static char *previous, *applied;
+    const char *current = getenv("WINEDLLOVERRIDES");
+    if (applied) {
+        if (current && !strcmp(current, applied)) {
+            if (previous) setenv("WINEDLLOVERRIDES", previous, 1);
+            else unsetenv("WINEDLLOVERRIDES");
+        }
+        free(previous); free(applied);
+        previous = applied = NULL;
+    }
+    if (!enable) return 1;
+    current = getenv("WINEDLLOVERRIDES");
+    char *saved = current ? strdup(current) : NULL;
+    if (current && !saved) return 0;
+    const char *rule = "msvcp140=b";
+    size_t length = (current ? strlen(current) : 0) + strlen(rule) + 2;
+    char *value = malloc(length);
+    if (!value) { free(saved); return 0; }
+    snprintf(value, length, "%s%s%s", current ? current : "",
+             current && *current ? ";" : "", rule);
+    if (setenv("WINEDLLOVERRIDES", value, 1)) {
+        free(saved); free(value); return 0;
+    }
+    previous = saved; applied = value;
+    return 1;
+}
+
 static os_log_t wine_proc_log(void) {
     static os_log_t log;
     static dispatch_once_t once;
@@ -1016,6 +1048,12 @@ static void *wine_process_thread(void *arg) {
         const char *dock_session = getenv("MADEIRA_DOCK_SESSION");
         const char *fex_launch_exe = getenv("MADEIRA_EXE");
         const int fex_forza4_launch = fex_launch_exe && strstr(fex_launch_exe, "ForzaHorizon4.exe");
+        if (!madeira_fh4_crt_override(fex_forza4_launch)) {
+            dprintf(STDERR_FILENO, "[forza-crt] could not configure MSVCP140 builtin override\n");
+        } else if (fex_forza4_launch) {
+            dprintf(STDERR_FILENO,
+                    "[forza-crt] MSVCP140=b: prefer Wine ARM64EC runtime over app-local x64 DLL\n");
+        }
 
         /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */
         unsetenv("MADEIRA_FEX_NO_RCPC");
