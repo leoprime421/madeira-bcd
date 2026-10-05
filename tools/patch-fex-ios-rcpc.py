@@ -7,6 +7,10 @@ that advertise FEAT_LRCPC, that makes x86 acquire polls lower to LDAPRB.  FH4
 can then remain in a tight poll when the byte is updated by another translated
 thread.  Madeira sets MADEIRA_FEX_NO_RCPC=1 only for FH4; keep the default
 feature set for every other title.
+
+Build trigger note: ml1154 also fixes the ntdll iOS RWX write-drop path via
+patch-ntdll-jit-alias-release.py. This file is in build-ipa.yml's push filter,
+so this revision intentionally starts the IPA build containing that fix.
 """
 import sys
 
