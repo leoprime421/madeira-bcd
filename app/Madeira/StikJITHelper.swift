@@ -648,8 +648,8 @@ enum StikJITHelper {
                 level: .error)
         }
 
-        // madeira-bcd SPLIT POOL: `pool-split = 1` in the game's own file or in
-        // madeira.cfg. Off by default; nothing below runs without it.
+        // madeira-bcd SPLIT POOL: enabled for FH4's CEF children by default.
+        // Explicit pool-split in the game or global config wins; other games opt in.
         //
         // Executable memory can only come from the debugger and can only live in
         // the low band under the dyld shared region (0x180000000): everything from
@@ -666,7 +666,13 @@ enum StikJITHelper {
         // WINE_IOS_JIT_HOLE tells ntdll never to hand out the part in between.
         // Costs the second region's size in footprint (debugger-blessed pages are
         // dirty from birth) -- the total stays within the requested pool size.
-        let splitValue = (MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split") ?? "")
+        let splitOverride = MadeiraConfig.gameValue("pool-split") ?? MadeiraConfig.get("pool-split")
+        let launchExe = getenv("MADEIRA_EXE").map { String(cString: $0) } ?? ""
+        let launchName = launchExe.replacingOccurrences(of: "\\", with: "/")
+            .split(separator: "/").last.map(String.init)?.lowercased() ?? ""
+        // FH4's CEF children require additional image copies. Its loader now
+        // guards failed auxiliary initialization; preserve an explicit opt-out.
+        let splitValue = (splitOverride ?? (launchName == "forzahorizon4.exe" ? "1" : ""))
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         poolHole = nil
         if ["1", "on", "true", "yes"].contains(splitValue) {
