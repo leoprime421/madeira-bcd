@@ -977,6 +977,22 @@ static void mad_untrack(struct mad_device *d, struct mad_resource *r);
 static void mad_format_info(DXGI_FORMAT f, UINT *bytes, UINT *block);
 static UINT64 mad_res_row_bytes(const struct mad_resource *r);
 static int mad_map_texture_format(DXGI_FORMAT f, D3D12_RESOURCE_FLAGS flags, enum WMTPixelFormat *out, int *is_depth);
+/* D3D12 MipLevels=0 requests the full chain, not a single level. */
+static UINT mad_resource_mip_count(const D3D12_RESOURCE_DESC *desc) {
+    UINT64 extent = desc->Width;
+    UINT levels = 1;
+    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) return 1;
+    if (desc->MipLevels) return desc->MipLevels;
+    if (desc->SampleDesc.Count > 1 ||
+        (desc->Flags & D3D12_RESOURCE_FLAG_ALLOW_CROSS_ADAPTER)) return 1;
+    if (desc->Dimension != D3D12_RESOURCE_DIMENSION_TEXTURE1D && desc->Height > extent)
+        extent = desc->Height;
+    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D && desc->DepthOrArraySize > extent)
+        extent = desc->DepthOrArraySize;
+    while (extent > 1) { extent >>= 1; levels++; }
+    return levels;
+}
+
 static int mad_texinfo_from_desc(const D3D12_RESOURCE_DESC *desc, struct WMTTextureInfo *ti, enum WMTPixelFormat *pf, int *is_depth);   /* ml1145 */
 static void mad_alias_desc(const struct mad_resource *r, char *o, size_t cap);   /* madeira-bcd */
 static void mad_res_short(const struct mad_resource *r, char *o, size_t cap);
@@ -8202,7 +8218,7 @@ static void STDMETHODCALLTYPE device_GetCopyableFootprints(ID3D12Device *This,
         UINT64 *total_bytes) {
     UINT bytes, block, i;
     UINT64 offset = base_offset;
-    UINT mips = desc->MipLevels ? desc->MipLevels : 1;
+    UINT mips = mad_resource_mip_count(desc);
     (void)This;
     mad_format_info(desc->Format, &bytes, &block);
     for (i = 0; i < count; i++) {
@@ -8251,7 +8267,7 @@ static D3D12_RESOURCE_ALLOCATION_INFO * STDMETHODCALLTYPE device_GetResourceAllo
             MTLDevice_heapBufferSizeAndAlign(md->mtl_device, d->Width ? d->Width : 1, WMTResourceStorageModePrivate, &msz, &mal);   /* ml1145 */
         } else {
             struct WMTTextureInfo ti; enum WMTPixelFormat pf; int isd;
-            UINT subs = (d->MipLevels ? d->MipLevels : 1) *
+            UINT subs = (mad_resource_mip_count(d)) *
                         (d->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D ? 1 : (d->DepthOrArraySize ? d->DepthOrArraySize : 1));
             device_GetCopyableFootprints(This, d, 0, subs, 0, NULL, NULL, NULL, &bytes);
             if (d->SampleDesc.Count > 1) a = D3D12_DEFAULT_MSAA_RESOURCE_PLACEMENT_ALIGNMENT;
@@ -8545,12 +8561,22 @@ static UINT64 mad_texture_view_id(struct mad_device *d, struct mad_resource *r, 
     if (!r->texture) return 0;
     if (!swz) swz = MAD_SWZ_IDENTITY;
     if (!pf || (r->is_depth && pf != WMTPixelFormatX32_Stencil8)) pf = r->tex_pf;   /* depth textures keep their format: sampled as depth; ml1101: unless a stencil view */
-    if (nlvl == 0 || nlvl == ~0u || lvl0 + nlvl > r->tex_mips) nlvl = r->tex_mips > lvl0 ? r->tex_mips - lvl0 : 1;
-    if (nsl == 0 || nsl == ~0u || sl0 + nsl > r->tex_layers) nsl = r->tex_layers > sl0 ? r->tex_layers - sl0 : 1;
+    /* A start outside the resource cannot be repaired by assigning count=1:
+     * mip 1 + count 1 on a one-mip texture aborts Metal validation. */
+    if (lvl0 >= r->tex_mips || sl0 >= r->tex_layers) {
+        if (said_fail++ < 12)
+            d3d12_log("[madeira-d3d12] texture view rejected: mip %u of %u, slice %u of %u (%s)\n",
+                      lvl0, r->tex_mips, sl0, r->tex_layers, r->name);
+        return 0;
+    }
+    /* Subtract after validating the start, avoiding unsigned addition wrap. */
+    if (nlvl == 0 || nlvl == ~0u || nlvl > r->tex_mips - lvl0) nlvl = r->tex_mips - lvl0;
+    if (nsl == 0 || nsl == ~0u || nsl > r->tex_layers - sl0) nsl = r->tex_layers - sl0;
     if (want == r->tex_type && lvl0 == 0 && nlvl == r->tex_mips && sl0 == 0 && nsl == r->tex_layers && pf == r->tex_pf && swz == MAD_SWZ_IDENTITY)
         return r->gpu_resource_id;
     if (want == WMTTextureTypeCube) nsl = 6;
-    if (want == WMTTextureTypeCubeArray) nsl = (nsl / 6) * 6 ? (nsl / 6) * 6 : 6;
+    if (want == WMTTextureTypeCubeArray) nsl = (nsl / 6) * 6;
+    if (!nsl || nsl > r->tex_layers - sl0) return 0;
     EnterCriticalSection(&d->view_lock);   /* ml1049 */
     for (k = 0; k < r->nxview; k++)
         if (r->xview[k].type == (UINT)want && r->xview[k].lvl0 == lvl0 && r->xview[k].nlvl == nlvl && r->xview[k].sl0 == sl0 && r->xview[k].nsl == nsl &&
@@ -9530,7 +9556,7 @@ static int mad_texinfo_from_desc(const D3D12_RESOURCE_DESC *desc, struct WMTText
     ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;
     ti->depth = 1;
     ti->array_length = 1;
-    ti->mipmap_level_count = desc->MipLevels ? desc->MipLevels : 1;
+    ti->mipmap_level_count = mad_resource_mip_count(desc);
     /* ml1030: same clamp as the PSO, or a 4x pipeline meets an 8x target. */
     ti->sample_count = mad_clamp_sample_count(desc->SampleDesc.Count ? desc->SampleDesc.Count : 1);
     /* ml932: every 1D/2D texture is allocated as an ARRAY (length >= 1),
@@ -9584,6 +9610,9 @@ static HRESULT mad_create_resource_at(struct mad_device *d, D3D12_HEAP_TYPE heap
     r->size = desc->Width;
     r->heap = heap_type;
     r->desc = *desc;
+    if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        r->desc.MipLevels = (UINT16)mad_resource_mip_count(desc);
+    desc = &r->desc;   /* subresource indexing must match the Metal allocation */
     r->owner = d;
 
     if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) {
