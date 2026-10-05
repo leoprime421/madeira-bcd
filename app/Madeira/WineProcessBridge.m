@@ -913,6 +913,15 @@ static void *wine_process_thread(void *arg) {
                  * alongside MADEIRA_TF_TRACE. */
                 setenv("WINEDEBUG", "err+all,err-virtual", 1);
                 LOG("WINEDEBUG = err+all,err-virtual (perf default — set MADEIRA_DEBUG_VERBOSE=1 for full trace)");
+                /* FH4 stays on "LOADING... PLEASE WAIT" while its wininet connections fail
+                 * with 12029 (device logs 2026-10-05 12:22: 32 failures, game alive, no disk
+                 * reads for 5 minutes). Name the host and the reason: wininet and winhttp
+                 * traces plus winsock/dnsapi warnings, a few dozen lines per session. */
+                const char *fh4_exe = getenv("MADEIRA_EXE");
+                if (fh4_exe && strstr(fh4_exe, "ForzaHorizon4.exe")) {
+                    setenv("WINEDEBUG", "err+all,err-virtual,trace+wininet,trace+winhttp,warn+winsock,warn+dnsapi", 1);
+                    LOG("WINEDEBUG += wininet/winhttp trace, winsock/dnsapi warnings (Forza Horizon 4 network diagnosis)");
+                }
             }
         }
 
