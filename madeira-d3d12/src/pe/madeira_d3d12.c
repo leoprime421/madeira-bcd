@@ -9602,6 +9602,10 @@ static HRESULT mad_create_resource_at(struct mad_device *d, D3D12_HEAP_TYPE heap
     struct mad_resource *r;
     HRESULT hr;
     if (desc->Dimension == D3D12_RESOURCE_DIMENSION_UNKNOWN) { mad_refuse_log(desc, heap_type, "dimension UNKNOWN"); return E_INVALIDARG; }
+    D3D12_RESOURCE_DESC resolved_desc = *desc;
+    if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        resolved_desc.MipLevels = (UINT16)mad_resource_mip_count(desc);
+    desc = &resolved_desc;   /* subresource indexing matches the Metal allocation */
 
     r = calloc(1, sizeof *r);
     if (!r) return E_OUTOFMEMORY;
@@ -9610,9 +9614,6 @@ static HRESULT mad_create_resource_at(struct mad_device *d, D3D12_HEAP_TYPE heap
     r->size = desc->Width;
     r->heap = heap_type;
     r->desc = *desc;
-    if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
-        r->desc.MipLevels = (UINT16)mad_resource_mip_count(desc);
-    desc = &r->desc;   /* subresource indexing must match the Metal allocation */
     r->owner = d;
 
     if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) {
