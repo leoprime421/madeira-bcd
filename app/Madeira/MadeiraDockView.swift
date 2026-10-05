@@ -25,6 +25,7 @@ final class MadeiraDockModel: ObservableObject {
     @Published private(set) var installRunNext: [Int: Bool] = [:]
 
     private var watch: Task<Void, Never>?
+    private var preparation: Task<Void, Never>?
 
     func refresh() {
         clientInstalled = MadeiraDock.clientInstalled
@@ -54,19 +55,22 @@ final class MadeiraDockModel: ObservableObject {
     func prepareClient() {
         guard !preparing else { return }
         preparing = true; error = nil; progress = "Starting…"
-        Task { @MainActor in
+        preparation = Task { @MainActor in
+            defer { preparing = false; preparation = nil; refresh() }
             do {
                 try await SteamRuntimeInstaller.shared.prepare(prefix: MadeiraDock.prefix) { text in
                     await MainActor.run { self.progress = text }
                 }
                 SteamLog.event("[dock-setup] client components ready")
             } catch {
-                self.error = error.localizedDescription
-                SteamLog.event("[dock-setup] client components failed")
+                self.error = Task.isCancelled ? "Download cancelled. You can try again." : error.localizedDescription
+                SteamLog.event("[dock-setup] client components failed: \(self.error ?? error.localizedDescription)")
             }
-            preparing = false
-            refresh()
         }
+    }
+
+    func cancelPreparation() {
+        preparation?.cancel()
     }
 
     /// Follows the host's report until it records a result, or the session ends
@@ -150,7 +154,11 @@ struct MadeiraDockView: View {
                         Label("Valve's client components are installed", systemImage: "checkmark.circle")
                     } else if dock.preparing {
                         HStack(spacing: 12) { ProgressView(); Text(dock.progress).foregroundStyle(.secondary) }
+                        Button("Cancel download", role: .cancel) { dock.cancelPreparation() }
                     } else {
+                        if let error = dock.error {
+                            Label(error, systemImage: "exclamationmark.circle.fill").foregroundStyle(.red)
+                        }
                         Button("Download Valve's client components (about 73 MB)") { dock.prepareClient() }
                     }
                 } header: { Text("Steam client") } footer: {
