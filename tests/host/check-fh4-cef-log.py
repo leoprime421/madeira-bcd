@@ -2,8 +2,9 @@
 """Forza Horizon 4: ForzaWebHelper.exe children get their own Chromium log; no Wine runs.
 
 Compiles fh4_cef_child_args from build/ntdll-unix/process_ios.c and checks that only
-ForzaWebHelper.exe with a --type= is touched, that switches the game already passes are
-not repeated, that the GPU process alone gets --v=1, and that a too small buffer yields 0.
+ForzaWebHelper.exe with a --type= is touched, that the game's own log switches are overridden
+(Chromium takes the last one), that the GPU process alone gets --v=1, and that a too small
+buffer yields 0.
 Needs python3 and a C compiler."""
 from pathlib import Path
 import subprocess, sys, tempfile, os
@@ -43,10 +44,9 @@ int main( void )
         FAIL( "gpu: [%s]\n", o );
     if (!run( fw, "x --type=utility --utility-sub-type=network.mojom.NetworkService", 4, o, sizeof(o) ) ||
         strcmp( o, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_4_utility.log" )) FAIL( "utility: [%s]\n", o );
-    if (!run( fw, "x --type=renderer --enable-logging --log-severity=warning", 5, o, sizeof(o) ) ||
-        strcmp( o, " --log-file=C:\\fh4_cef_5_renderer.log" )) FAIL( "renderer: [%s]\n", o );
-    if (run( fw, "x --type=renderer --enable-logging --log-severity=info --log-file=C:\\a.log", 6, o, sizeof(o) ) != 0)
-        FAIL( "all present must add nothing\n" );
+    if (!run( fw, "x --type=renderer --enable-logging --log-severity=disable --log-file=C:\\a.log", 5, o, sizeof(o) ) ||
+        strcmp( o, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_5_renderer.log" ))
+        FAIL( "the game's own log switches must be overridden: [%s]\n", o );
     if (run( fw, "x --enable-logging", 7, o, sizeof(o) ) != 0) FAIL( "browser (no --type=) touched\n" );
     if (run( "C:\\x\\steamwebhelper.exe", "x --type=gpu-process", 8, o, sizeof(o) ) != 0) FAIL( "other helper touched\n" );
     if (run( "C:\\x\\NotForzaWebHelper.exe", "x --type=gpu-process", 9, o, sizeof(o) ) != 0) FAIL( "look-alike touched\n" );

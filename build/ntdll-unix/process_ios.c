@@ -1137,7 +1137,7 @@ static const char *child_extra_args( const char *spec, const WCHAR *image, int i
  * menu stays a blurred backdrop (device log 2026-10-05 09:29). Chromium's own
  * log is the only thing that can say why, so every ForzaWebHelper.exe child
  * gets its own C:\fh4_cef_<n>_<type>.log (picked up by the *.log mirror,
- * MADEIRA_GUEST_LOG) unless the game already passes the switch itself.
+ * MADEIRA_GUEST_LOG), overriding the game's own log switches.
  * Writes " --enable-logging --log-severity=info --log-file=... [--v=1]" to
  * `out` (`cap` bytes with the NUL) and returns its length, or 0 when `image`
  * is not ForzaWebHelper.exe, `cl` has no --type= or `out` is too small. */
@@ -1156,14 +1156,11 @@ static int fh4_cef_child_args( const WCHAR *image, int image_len, const WCHAR *c
     }
     if (!n) return 0;
     type[n] = 0;
-    o = 0;
-    if (sc_switch_end( cl, cl_len, "--enable-logging" ) < 0)
-        o += snprintf( out + o, cap - o, " --enable-logging" );
-    if (o < cap && sc_switch_end( cl, cl_len, "--log-severity=" ) < 0)
-        o += snprintf( out + o, cap - o, " --log-severity=info" );
-    if (o < cap && sc_switch_end( cl, cl_len, "--log-file=" ) < 0)
-        o += snprintf( out + o, cap - o, " --log-file=C:\\fh4_cef_%u_%s.log", serial, type );
-    if (o < cap && !strcmp( type, "gpu-process" ) && sc_switch_end( cl, cl_len, "--v=" ) < 0)
+    /* Chromium takes the LAST occurrence of a switch, and the game already passes its
+     * own --log-severity=/--log-file= (build 73: nothing reached the mirror), so these
+     * are appended unconditionally to override them. */
+    o = snprintf( out, cap, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_%u_%s.log", serial, type );
+    if (o < cap && !strcmp( type, "gpu-process" ))
         o += snprintf( out + o, cap - o, " --v=1" );
     return o < cap ? o : 0;
 }
