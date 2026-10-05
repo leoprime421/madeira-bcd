@@ -1201,9 +1201,36 @@ jobs:
       - name: Rebuild ARM64EC ntdll with startup and protect fixes
         shell: bash
         run: |
+          # Preserve the empty relative timer queue's infinite deadline.
+          # Converting MAXLONGLONG to a relative delay can underflow when the
+          # server samples its clock later than the timerqueue thread.
+          python3 - <<'PYEOF'
+          from pathlib import Path
+          p = Path("wine/dlls/ntdll/threadpool.c")
+          s = p.read_text()
+          old = """        if (timeout.QuadPart > rel_now)
+                      timeout.QuadPart = rel_now - timeout.QuadPart;
+                  else
+                      timeout.QuadPart = 0;"""
+          new = """        /* madeira-bcd: keep an empty queue disarmed, without relative overflow. */
+                  if (timeout.QuadPart != MAXLONGLONG)
+                  {
+                      if ((ULONGLONG)timeout.QuadPart > rel_now)
+                          timeout.QuadPart = rel_now - timeout.QuadPart;
+                      else
+                          timeout.QuadPart = 0;
+                  }"""
+          if new in s:
+              print("threadpool infinite deadline fix already applied")
+          elif s.count(old) == 1:
+              p.write_text(s.replace(old, new))
+              print("threadpool infinite deadline conversion fixed")
+          else:
+              raise SystemExit("threadpool deadline anchor changed; review required")
+          PYEOF
           python3 tools/patch-wine-execreq-leave.py wine/dlls/ntdll/signal_arm64ec.c
           # The Wine cache may hold objects newer than these patched sources.
-          touch wine/dlls/ntdll/loader.c wine/dlls/ntdll/signal_arm64ec.c
+          touch wine/dlls/ntdll/loader.c wine/dlls/ntdll/signal_arm64ec.c wine/dlls/ntdll/threadpool.c
           bash build/wine-pe/build-ntdll.sh
           # Search the binary directly: strings | grep -q can trip pipefail when
           # grep exits early and strings receives SIGPIPE.
