@@ -1248,7 +1248,29 @@ jobs:
           if part.count(old) != 4:
               raise SystemExit("ARM64EC loader abort: expected four failure exits")
           part = part.replace(old, new)
+          s = s[:begin] + part + s[end:]
+          begin = s.index("void loader_init(")
+          end = s.index("\n}", begin) + 2
+          part = s[begin:end]
+          old_main = "        wm = get_modref( NtCurrentTeb()->Peb->ImageBaseAddress );"
+          new_main = old_main + """
+          #ifdef __arm64ec__
+                  /* A failed auxiliary startup can leave no registered main
+                   * module. Do not dereference it or orphan loader_section. */
+                  if (!wm)
+                  {
+                      ERR( "loader_init: missing main module for image %p; terminating thread\\n",
+                           NtCurrentTeb()->Peb->ImageBaseAddress );
+                      while (RtlIsCriticalSectionLockedByThread( &loader_section ))
+                          RtlLeaveCriticalSection( &loader_section );
+                      for (;;) NtTerminateThread( GetCurrentThread(), STATUS_DLL_INIT_FAILED );
+                  }
+          #endif"""
+          if part.count(old_main) != 1:
+              raise SystemExit("ARM64EC loader init: expected one main-module lookup")
+          part = part.replace(old_main, new_main)
           p.write_text(s[:begin] + part + s[end:])
+          print("ARM64EC loader init: guarded missing main module and released thread-owned lock")
           print("ARM64EC loader abort: balanced current-thread lock on four failures")
           PY
           touch wine/dlls/ntdll/loader.c wine/dlls/ntdll/signal_arm64ec.c wine/dlls/ntdll/threadpool.c
