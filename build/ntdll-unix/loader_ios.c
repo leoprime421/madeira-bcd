@@ -1612,6 +1612,20 @@ static NTSTATUS find_builtin_dll( UNICODE_STRING *nt_name, ANSI_STRING *exp_name
 
     TRACE( "looking for %s for file %s\n", debugstr_a(file + pos + 1), debugstr_us(nt_name) );
 
+#ifdef WINE_IOS
+    /* Explicit builtin loads must use the bundled PE runtime. Never probe
+     * Unix .so modules on iOS: those mappings are not supported here. */
+    for (i = 0; dll_paths[i]; i++)
+    {
+        ptr = prepend( file + pos, pe_dir, strlen(pe_dir) );
+        ptr = prepend( ptr, dll_paths[i], strlen(dll_paths[i]) );
+        status = open_builtin_pe_file( ptr, &attr, module, size_ptr, image_info,
+                                       limit_low, limit_high, load_machine, FALSE, offset );
+        if (status != STATUS_DLL_NOT_FOUND && status != STATUS_NOT_SUPPORTED) goto done;
+    }
+    goto done;
+#endif
+
     if (build_dir)
     {
         /* try as a dll */
@@ -1690,12 +1704,18 @@ NTSTATUS load_builtin( const struct pe_image_info *image_info, UNICODE_STRING *n
                        off_t offset )
 {
 #ifdef WINE_IOS
-    /* iOS: still respect WINEDLLOVERRIDES=name= (LO_DISABLED) so users can
-     * refuse to load specific DLLs (e.g. steamclient64 — packed unpacker
-     * blows up Wine's loader). The original short-circuit below skips the
-     * builtin .so search; we keep that, just gate it on the override. */
+    /* Respect explicit builtin and disabled overrides while avoiding the
+     * unsupported Unix .so search on iOS. Other orders keep prefix PEs. */
     {
         enum loadorder lo = get_load_order( nt_name );
+        if (lo == LO_BUILTIN)
+        {
+            /* The application-local x64 DLL must not win an explicit =b
+             * override. Resolve the current runtime architecture's PE. */
+            USHORT search_machine = ios_is_arm64ec_cur() ? current_machine : image_info->machine;
+            return find_builtin_dll( nt_name, exp_name, module, size, info,
+                                     limit_low, limit_high, search_machine, machine, FALSE, offset );
+        }
         if (lo == LO_DISABLED)
         {
             TRACE( "iOS: %s disabled by WINEDLLOVERRIDES\n", debugstr_us(nt_name) );
