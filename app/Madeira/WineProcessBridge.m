@@ -1741,11 +1741,30 @@ static void *wine_process_thread(void *arg) {
             }
         }
 
-        char *argv[24];
+        char *argv[32];
         int argc = 0;
         argv[argc++] = "wine";
         argv[argc++] = exe_path;
         for (int i = 0; i < extra_argc; i++) argv[argc++] = extra_argv[i];
+        /* FH4 embeds CEF in the game process. Its NetworkService utility
+         * repeatedly loads another 127MB libcef copy until the executable
+         * pool is exhausted (even with split allocation). Ask Chromium to
+         * keep its services in-process and use software UI compositing.
+         * Do not refuse children: if this CEF ignores switches, IPC must
+         * fail honestly rather than wait on a fake successful spawn. */
+        const char *fh4_cef = getenv("MADEIRA_FH4_CEF");
+        if (fex_forza4_launch && !(fh4_cef && fh4_cef[0] == '0')) {
+            static char *cef_flags[] = {
+                "--single-process", "--disable-gpu", "--disable-gpu-compositing"
+            };
+            for (unsigned k = 0; k < sizeof(cef_flags) / sizeof(cef_flags[0]); k++) {
+                int present = 0;
+                for (int j = 2; j < argc; j++)
+                    if (!strcmp(argv[j], cef_flags[k])) { present = 1; break; }
+                if (!present) argv[argc++] = cef_flags[k];
+            }
+            dprintf(STDERR_FILENO, "[forza-cef] single-process software UI requested; MADEIRA_FH4_CEF=0 disables\n");
+        }
         argv[argc] = NULL;
         dprintf(STDERR_FILENO, "[WineProc] argv[1] = %s\n", exe_path);
         for (int i = 0; i < extra_argc; i++) {
