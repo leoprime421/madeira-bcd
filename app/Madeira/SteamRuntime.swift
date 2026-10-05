@@ -220,7 +220,8 @@ actor SteamRuntimeInstaller {
         defer { try? fm.removeItem(at: stage) }
         let configuration = URLSessionConfiguration.ephemeral
         configuration.httpCookieStorage = nil; configuration.urlCredentialStorage = nil
-        configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 900
+        configuration.waitsForConnectivity = false
+        configuration.timeoutIntervalForRequest = 60; configuration.timeoutIntervalForResource = 300
         let session = URLSession(configuration: configuration, delegate: SteamRuntimeRedirects(), delegateQueue: nil)
         defer { session.invalidateAndCancel() }
         var names = Set<String>(), files: [String] = []
@@ -239,6 +240,7 @@ actor SteamRuntimeInstaller {
             guard Self.hash(archive) == package.sha256 else { throw SteamRuntimeFiles.Failure.invalidPackage }
             await progress("Verifying Steam components…")
             try SteamRuntimeFiles.unpack(archive) { name, bytes in
+                try Task.checkCancellation()
                 guard names.insert(name.lowercased()).inserted else { throw SteamRuntimeFiles.Failure.invalidPackage }
                 let file = stage.appendingPathComponent(name)
                 try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
