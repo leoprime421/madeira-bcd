@@ -1064,6 +1064,43 @@ static void *wine_process_thread(void *arg) {
                     "[forza-crt] MSVCP140=b: prefer Wine ARM64EC runtime over app-local x64 DLL\n");
         }
 
+        /* madeira-bcd: Marvel's Spider-Man Remastered / Miles Morales (Nixxes NxApp).
+         * Session 2026-10-06 15:07 (build 93, NVIDIA toggle off): DXGI's output
+         * carried the private monitor sentinel (HMONITOR 1), so the game found
+         * no monitor ("[Render] Fake monitor used (1280x720)", "[Validate
+         * Settings] Could not find any display mode..."); after Play its main
+         * thread read through NULL at Spider-Man.exe+0x18749cc about 1 s after
+         * the swapchain, the crash reporter took over and the screen stayed
+         * black (presents=0). Ghost of Tsushima, same framework, needs the same
+         * two DXGI switches (LibraryBCD.swift sets them only with NVIDIA on).
+         * MADEIRA_DXGI_SRC adds EnumAdapterByLuid, which libxess.dll called and
+         * got "not implemented"; the guest-log keys keep the game's whole log.
+         * Set before madeira.cfg and the game's file are exported, so an
+         * env.NAME = 0 there still wins. DXMT_WSI_* are reset by LibraryBCD.swift
+         * on every launch; the other keys are cleared here on the next launch
+         * of another title. */
+        {
+            static const char *const nx_wsi[] = { "DXMT_WSI_MONITOR_IDENTITY", "DXMT_WSI_MODE_TABLE" };
+            static const char *const nx_keys[][2] = {
+                { "MADEIRA_DXGI_SRC", "1" },
+                { "MADEIRA_GUEST_LOG", "all" },
+                { "MADEIRA_GUEST_LOG_LIMIT", "1500" },
+            };
+            static int nx_keys_set;
+            const int nx_launch = fex_launch_exe &&
+                (strstr(fex_launch_exe, "Spider-Man.exe") || strstr(fex_launch_exe, "MilesMorales.exe"));
+            if (nx_keys_set && !nx_launch)
+                for (size_t i = 0; i < sizeof nx_keys / sizeof nx_keys[0]; i++) unsetenv(nx_keys[i][0]);
+            nx_keys_set = nx_launch;
+            if (nx_launch) {
+                for (size_t i = 0; i < sizeof nx_wsi / sizeof nx_wsi[0]; i++) setenv(nx_wsi[i], "1", 0);
+                for (size_t i = 0; i < sizeof nx_keys / sizeof nx_keys[0]; i++) setenv(nx_keys[i][0], nx_keys[i][1], 1);
+                dprintf(STDERR_FILENO, "[nixxes] Spider-Man defaults: DXMT_WSI_MONITOR_IDENTITY=%s DXMT_WSI_MODE_TABLE=%s "
+                        "MADEIRA_DXGI_SRC=1 MADEIRA_GUEST_LOG=all/1500 (madeira.cfg / the game's file still win)\n",
+                        getenv(nx_wsi[0]), getenv(nx_wsi[1]));
+            }
+        }
+
         /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */
         unsetenv("MADEIRA_FEX_NO_RCPC");
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
