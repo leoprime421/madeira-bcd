@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Patch virtual_ios.c: retire stale aliases and fix iOS RWX write-drop."""
+"""Patch virtual_ios.c: retire stale aliases, fix iOS RWX write-drop, and split tail reuse."""
 from pathlib import Path
 import sys
 
@@ -97,7 +97,51 @@ if marker not in src:
         raise SystemExit(f"RWX write-drop anchor count={src.count(old)}, expected 1")
     src = src.replace(old, new, 1)
 
-if src.count(helper_sig) != 1 or src.count(hook) != 1 or src.count(marker) != 1:
+# FH4/CEF can recycle a large free tail carve for a tiny EC-code request.
+# ml438 consumed the WHOLE free carve and returned that full size to FEX
+# (observed: 16 MB reused for a 16 KB request), turning the remainder into
+# live-but-unused pool space. Split the selected carve in place: the requested
+# prefix becomes live and the unused suffix remains a free carve.
+tail_old = '''                void *jit_rx = (char *)ios_jit_rx_base_global + ios_tail_carves[best].off;
+                void *jit_rw = (char *)ios_jit_rw_base_global + ios_tail_carves[best].off;
+                size_t got = ios_tail_carves[best].size;
+                ios_tail_carves[best].free = 0;
+                pthread_mutex_unlock( &ios_tail_carve_lock );'''
+tail_new = '''                void *jit_rx = (char *)ios_jit_rx_base_global + ios_tail_carves[best].off;
+                void *jit_rw = (char *)ios_jit_rw_base_global + ios_tail_carves[best].off;
+                size_t whole = ios_tail_carves[best].size;
+                size_t got = alloc_size;
+                size_t remainder = 0;
+                if (whole > alloc_size && ios_tail_carve_n < IOS_TAIL_CARVE_MAX)
+                {
+                    remainder = whole - alloc_size;
+                    ios_tail_carves[ios_tail_carve_n].off = ios_tail_carves[best].off + alloc_size;
+                    ios_tail_carves[ios_tail_carve_n].size = remainder;
+                    ios_tail_carves[ios_tail_carve_n].free = 1;
+                    ios_tail_carves[best].size = alloc_size;
+                    ios_tail_carves[best].free = 0;
+                    ios_tail_carve_n++;
+                }
+                else
+                {
+                    /* If the bookkeeping table is full, retain the old safe
+                     * whole-carve behaviour rather than create an untracked range. */
+                    got = whole;
+                    ios_tail_carves[best].free = 0;
+                }
+                pthread_mutex_unlock( &ios_tail_carve_lock );
+                if (remainder)
+                    dprintf(2, "[jit-pool] ml1156: split reused tail carve rx=%p "
+                               "asked=0x%lx remainder=0x%lx\\n",
+                            jit_rx, (unsigned long)got, (unsigned long)remainder);'''
+tail_marker = "ml1156: split reused tail carve"
+if tail_marker not in src:
+    if src.count(tail_old) != 1:
+        raise SystemExit(f"tail split anchor count={src.count(tail_old)}, expected 1")
+    src = src.replace(tail_old, tail_new, 1)
+
+if (src.count(helper_sig) != 1 or src.count(hook) != 1 or
+        src.count(marker) != 1 or src.count(tail_marker) != 1):
     raise SystemExit("post-patch verification failed")
 path.write_text(src)
-print(f"{path}: stale alias retirement + RWX write-drop fallthrough ml1154")
+print(f"{path}: alias retirement + RWX write-drop ml1154 + tail split ml1156")
