@@ -4,7 +4,7 @@
 Build 85 reaches a real D3D12 swapchain (1280x720 / 1408x648), then Metal
 asserts because a later D3D12 TEXTURE2D descriptor reaches winemetal as 0x0.
 Build 87 proved the Metal-side recovery works, but also proved the D3D12
-resource object still retained the original 0x0 descriptor.  Keep both sides
+resource object still retained the original 0x0 descriptor. Keep both sides
 consistent so GetDesc/allocation/resource bookkeeping see the same dimensions.
 """
 from pathlib import Path
@@ -15,7 +15,7 @@ mad = root / "madeira-d3d12/src/pe/madeira_d3d12.c"
 dxgi = root / "dxmt/src/dxgi/dxgi_output.cpp"
 
 # --- madeira_d3d12: remember the last valid swapchain dimensions and use them
-# only when a later 2D texture descriptor has a missing dimension.  Do not turn
+# only when a later 2D texture descriptor has a missing dimension. Do not turn
 # arbitrary invalid 1D/3D resources into 1x1 textures.
 s = mad.read_text()
 marker = "ml1159 zero-size TEXTURE2D"
@@ -35,10 +35,10 @@ if marker not in s:
     ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;
     /* ml1159: Spider-Man build 85 creates the real 1280x720/1408x648
      * swapchain successfully, then a later TEXTURE2D reaches Metal as 0x0.
-     * Metal asserts instead of returning an HRESULT.  Windows never hands
+     * Metal asserts instead of returning an HRESULT. Windows never hands
      * Metal a zero-size texture; for this drawable-adjacent case recover the
      * missing dimensions from the last valid swapchain rather than inventing
-     * 1x1.  Other invalid dimensions are rejected below. */
+     * 1x1. Other invalid dimensions are rejected below. */
     if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
         (!ti->width || !ti->height)) {
         UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);
@@ -68,7 +68,7 @@ if marker not in s:
     UINT i, n = s->desc.BufferCount ? s->desc.BufferCount : 2;
     int is_depth;"""
     swap_new = swap_anchor + """
-    /* ml1159: publish only a valid drawable size.  The resource builder may
+    /* ml1159: publish only a valid drawable size. The resource builder may
      * use it to repair a later zero-dimension 2D drawable resource. */
     if (s->desc.Width && s->desc.Height) {
         InterlockedExchange(&g_last_swap_width, (LONG)s->desc.Width);
@@ -79,48 +79,44 @@ if marker not in s:
     s = s.replace(swap_anchor, swap_new, 1)
     mad.write_text(s)
 
-# Build 88/89 / ml1161: Build 87 proved the Metal texture is repaired to the
-# swapchain size, but the D3D12 resource still logs/returns 0x0 because r->desc
-# is copied from the original descriptor before mad_fill_texinfo repairs only a
-# temporary WMTTextureInfo. Normalize the descriptor before the resource copies
-# it so r->size, GetDesc() and all later bookkeeping see the repaired geometry.
+# Build 89/90 / ml1161: keep the actual D3D12 descriptor consistent with the
+# Metal texture. mad_create_resource_at() already creates resolved_desc before
+# any resource allocation, so repair that existing local copy instead of
+# declaring a second D3D12_RESOURCE_DESC in the middle of the function.
 s = mad.read_text()
 desc_marker = "ml1161 resource-desc"
 if desc_marker not in s:
-    desc_anchor = """    r->size = desc->Width;
-    r->heap = heap_type;
-    r->desc = *desc;
-    r->owner = d;"""
-    desc_replacement = """    /* ml1161 resource-desc: ml1159 repaired only the temporary Metal
-     * texture descriptor. Keep the actual D3D12_RESOURCE_DESC consistent as
-     * well, otherwise GetDesc()/resource bookkeeping still observes 0x0. */
-    D3D12_RESOURCE_DESC madeira_desc;
-    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        (!desc->Width || !desc->Height)) {
+    desc_anchor = """    D3D12_RESOURCE_DESC resolved_desc = *desc;
+    if (desc->Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        resolved_desc.MipLevels = (UINT16)mad_resource_mip_count(desc);
+    desc = &resolved_desc;   /* subresource indexing matches the Metal allocation */"""
+    desc_replacement = """    D3D12_RESOURCE_DESC resolved_desc = *desc;
+    /* ml1161 resource-desc: ml1159 repaired only the temporary Metal texture
+     * descriptor. Repair the function's existing resolved_desc before it is
+     * copied into the resource, so GetDesc()/size/bookkeeping all agree. */
+    if (resolved_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        (!resolved_desc.Width || !resolved_desc.Height)) {
         UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);
         UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);
         if (sw && sh) {
-            UINT64 oldw = desc->Width;
-            UINT oldh = desc->Height;
-            madeira_desc = *desc;
-            if (!madeira_desc.Width) madeira_desc.Width = sw;
-            if (!madeira_desc.Height) madeira_desc.Height = sh;
-            desc = &madeira_desc;
+            UINT64 oldw = resolved_desc.Width;
+            UINT oldh = resolved_desc.Height;
+            if (!resolved_desc.Width) resolved_desc.Width = sw;
+            if (!resolved_desc.Height) resolved_desc.Height = sh;
             {
                 static LONG said_desc;
                 if (InterlockedIncrement(&said_desc) <= 16)
                     d3d12_log("[madeira-d3d12] ml1161 resource-desc %llux%u -> %llux%u (swapchain)\n",
                               (unsigned long long)oldw, oldh,
-                              (unsigned long long)desc->Width, desc->Height);
+                              (unsigned long long)resolved_desc.Width, resolved_desc.Height);
             }
         }
     }
-    r->size = desc->Width;
-    r->heap = heap_type;
-    r->desc = *desc;
-    r->owner = d;"""
+    if (resolved_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        resolved_desc.MipLevels = (UINT16)mad_resource_mip_count(&resolved_desc);
+    desc = &resolved_desc;   /* subresource indexing matches the Metal allocation */"""
     if s.count(desc_anchor) != 1:
-        raise SystemExit(f"ml1161 resource-desc anchor changed (found {s.count(desc_anchor)})")
+        raise SystemExit(f"ml1161 resolved-desc anchor changed (found {s.count(desc_anchor)})")
     s = s.replace(desc_anchor, desc_replacement, 1)
     mad.write_text(s)
 
