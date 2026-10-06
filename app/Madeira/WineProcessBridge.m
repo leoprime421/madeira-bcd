@@ -1068,7 +1068,13 @@ static void *wine_process_thread(void *arg) {
         unsetenv("MADEIRA_FEX_NO_RCPC");
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
         unsetenv("MADEIRA_EXECREQ_LEAVE");
+        unsetenv("MADEIRA_REVOCATION_SOFTFAIL");
         if (fex_forza4_launch) {
+            /* After Continue FH4 retries one HTTPS request forever: crypt32 cannot reach
+             * ocsp.digicert.com / crl3.digicert.com (resolved to 0.0.0.0) and marks the chain
+             * "revocation offline". Only that case stops being an error (crypt32 rebuilt by
+             * tools/build-wine-extra-dlls.sh); revoked certificates still fail. */
+            setenv("MADEIRA_REVOCATION_SOFTFAIL", "1", 1);
             setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
             setenv("MADEIRA_FEX_FH4_SPIN_FIX", "1", 1);
             /* Wine's ARM64EC NtProtectVirtualMemory executable-request path

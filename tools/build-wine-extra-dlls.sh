@@ -54,7 +54,16 @@ if [ "${MADEIRA_XINPUT_RUMBLE_BUILD:-1}" != 0 ]; then
         targets="$targets dlls/$d/arm64ec-windows/$d.dll"; XI="$XI $d"
     done
 fi
-[ -n "$todo$XI" ] || { echo "nothing to build"; exit 0; }
+# Forza Horizon 4: crypt32 is rebuilt with tools/patch-wine-crypt32-revocation-offline.py
+# (an unreachable revocation server is not a chain error under
+# MADEIRA_REVOCATION_SOFTFAIL=1, which the app sets for FH4 only) and replaces the
+# shipped copy, as xinput does above. A failed build keeps the shipped crypt32.
+# MADEIRA_CRYPT32_REVOCATION_BUILD=0 skips it.
+CR=""
+if [ "${MADEIRA_CRYPT32_REVOCATION_BUILD:-1}" != 0 ] && [ -d "$R/wine/dlls/crypt32" ]; then
+    targets="$targets dlls/crypt32/arm64ec-windows/crypt32.dll"; CR="crypt32"
+fi
+[ -n "$todo$XI$CR" ] || { echo "nothing to build"; exit 0; }
 
 if [ ! -f "$B/Makefile" ]; then
     mkdir -p "$B"
@@ -75,8 +84,35 @@ if [ -n "$XI" ]; then
     # Old objects from an unpatched build must not satisfy make.
     for d in $XI; do rm -f "$B/dlls/$d/arm64ec-windows/$d.dll" "$B/dlls/$d"/arm64ec-windows/*.o; done
 fi
+cr_patched=0
+if [ -n "$CR" ]; then
+    python3 "$R/tools/patch-wine-crypt32-revocation-offline.py" "$R/wine/dlls/crypt32/chain.c" && cr_patched=1
+    rm -f "$B/dlls/crypt32/arm64ec-windows/crypt32.dll" "$B/dlls/crypt32"/arm64ec-windows/*.o
+fi
 make -C "$B" -k -j"$JOBS" $targets > "$B.build.log" 2>&1
-git -C "$R/wine" checkout -- dlls/msvcrt/main.c dlls/xinput1_3/main.c
+git -C "$R/wine" checkout -- dlls/msvcrt/main.c dlls/xinput1_3/main.c dlls/crypt32/chain.c
+if [ "$cr_patched" = 1 ]; then
+    f="$B/dlls/crypt32/arm64ec-windows/crypt32.dll"
+    if [ -f "$f" ]; then
+        cp "$f" "$SHIP/crypt32.dll.tmp"
+        "$MINGW/llvm-strip" "$SHIP/crypt32.dll.tmp"
+        python3 - "$SHIP/crypt32.dll.tmp" <<'PY2'
+import struct, sys
+p = sys.argv[1]; d = open(p, 'rb').read()
+pe = struct.unpack_from('<I', d, 0x3c)[0]
+target = struct.unpack_from('<I', d, pe + 24 + 56)[0] + 0x10000
+if len(d) < target:
+    open(p, 'ab').write(b'\0' * (target - len(d)))
+PY2
+        mv "$SHIP/crypt32.dll.tmp" "$SHIP/crypt32.dll"
+        echo "::notice::crypt32 rebuilt with the offline-revocation switch (MADEIRA_REVOCATION_SOFTFAIL) and shipped"
+    else
+        echo "::warning::crypt32 revocation build failed; shipped crypt32.dll kept"
+        grep -m 10 "crypt32" "$B.build.log"
+    fi
+elif [ -n "$CR" ]; then
+    echo "::warning::crypt32 revocation patch did not apply; shipped crypt32.dll kept"
+fi
 xi_built=0; xi_failed=""
 if [ "$xi_patched" = 1 ]; then
     for d in $XI; do
