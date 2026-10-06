@@ -6,6 +6,8 @@ and madeira-d3d12 are compiled. Keeping this hook here makes a clean CI checkout
 receive the exact same fixes every time rather than relying on a dirty submodule.
 Build 87 retriggers CI after fixing ml1160's post-patch verifier: the marker is
 intentionally present once in a source comment and once in the runtime log.
+Build 88 adds ml1161 so a recovered 0x0 drawable updates the D3D12 resource
+descriptor itself before allocation/bookkeeping, not only the Metal texture.
 """
 
 from pathlib import Path
@@ -64,10 +66,11 @@ else:
     path.write_text(source)
     print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
 
-# Build 86/87: this build hook runs before the native DXMT archive and before
-# the madeira_d3d12 PE runtime are compiled. Apply the deterministic zero-
-# dimension texture recovery and iOS current-display-mode fallback to the
-# checked-out sources. The patcher is idempotent and verifies every anchor.
+# Build 86/87/88: this hook runs before the native DXMT archive and before the
+# madeira_d3d12 PE runtime are compiled. Apply the deterministic zero-dimension
+# texture recovery, D3D12 descriptor consistency fix and iOS current-mode
+# fallback to the checked-out sources. The patcher is idempotent and verifies
+# every anchor.
 repo_root = Path(__file__).resolve().parents[2]
 patch86 = repo_root / "tools/patch-spiderman-build86.py"
 subprocess.run([sys.executable, str(patch86), str(repo_root)], check=True)
