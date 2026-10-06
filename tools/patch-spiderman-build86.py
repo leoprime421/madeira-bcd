@@ -23,29 +23,16 @@ if marker not in s:
     tex_new = """    ti->pixel_format = *pf;
     ti->width = (uint32_t)desc->Width;
     ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;
-    /* ml1159 zero-size TEXTURE2D: recover drawable-adjacent zero dimensions
-     * from the last valid swapchain. LONG reads/writes are naturally atomic
-     * here; avoid InterlockedCompareExchange as an rvalue because llvm-mingw's
-     * ARM64EC Windows headers expose that intrinsic as a statement form. */
-    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        (!ti->width || !ti->height)) {
-        UINT sw = (UINT)g_last_swap_width;
-        UINT sh = (UINT)g_last_swap_height;
-        if (sw && sh) {
-            static LONG said;
-            UINT oldw = ti->width, oldh = ti->height;
-            if (!ti->width) ti->width = sw;
-            if (!ti->height) ti->height = sh;
-            if (InterlockedIncrement(&said) <= 16)
-                d3d12_log("[madeira-d3d12] ml1159 zero-size TEXTURE2D %ux%u -> swapchain %ux%u\n",
-                          oldw, oldh, ti->width, ti->height);
-        }
+    /* ml1159 zero-size TEXTURE2D: use the last valid drawable dimensions.
+     * Keep this deliberately expression-simple for llvm-mingw ARM64EC C. */
+    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        if (!ti->width && g_last_swap_width > 0)
+            ti->width = (uint32_t)g_last_swap_width;
+        if (!ti->height && g_last_swap_height > 0)
+            ti->height = (uint32_t)g_last_swap_height;
     }
-    if (!ti->width || !ti->height) {
-        d3d12_log("[madeira-d3d12] ml1159 refusing invalid texture dimensions %ux%u dim=%u\n",
-                  ti->width, ti->height, (unsigned)desc->Dimension);
+    if (!ti->width || !ti->height)
         return 0;
-    }
     ti->depth = 1;"""
     if s.count(tex_old) != 1:
         raise SystemExit("ml1159 texinfo anchor changed")
@@ -74,26 +61,14 @@ if "ml1161 resource-desc" not in s:
         resolved_desc.MipLevels = (UINT16)mad_resource_mip_count(desc);
     desc = &resolved_desc;   /* subresource indexing matches the Metal allocation */"""
     new = """    D3D12_RESOURCE_DESC resolved_desc = *desc;
-    /* ml1161 resource-desc: keep D3D12 GetDesc/bookkeeping consistent with
-     * the Metal-side ml1159 recovery. Use plain volatile LONG reads; the
-     * ARM64EC mingw InterlockedCompareExchange macro is not an rvalue. */
-    if (resolved_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
-        (!resolved_desc.Width || !resolved_desc.Height)) {
-        UINT sw = (UINT)g_last_swap_width;
-        UINT sh = (UINT)g_last_swap_height;
-        if (sw && sh) {
-            UINT64 oldw = resolved_desc.Width;
-            UINT oldh = resolved_desc.Height;
-            if (!resolved_desc.Width) resolved_desc.Width = sw;
-            if (!resolved_desc.Height) resolved_desc.Height = sh;
-            {
-                static LONG said_desc;
-                if (InterlockedIncrement(&said_desc) <= 16)
-                    d3d12_log("[madeira-d3d12] ml1161 resource-desc %llux%u -> %llux%u (swapchain)\n",
-                              (unsigned long long)oldw, oldh,
-                              (unsigned long long)resolved_desc.Width, resolved_desc.Height);
-            }
-        }
+    /* ml1161 resource-desc: keep GetDesc/bookkeeping consistent with ml1159.
+     * No temporary declarations or logging here: this hot path must also build
+     * with llvm-mingw's ARM64EC C frontend. */
+    if (resolved_desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D) {
+        if (!resolved_desc.Width && g_last_swap_width > 0)
+            resolved_desc.Width = (UINT64)g_last_swap_width;
+        if (!resolved_desc.Height && g_last_swap_height > 0)
+            resolved_desc.Height = (UINT)g_last_swap_height;
     }
     if (resolved_desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
         resolved_desc.MipLevels = (UINT16)mad_resource_mip_count(&resolved_desc);
@@ -147,13 +122,10 @@ if "ml1160 fallback-current" not in d:
     dxgi.write_text(d)
 
 s = mad.read_text(); d = dxgi.read_text()
-# ml1159 intentionally appears twice after patching: once in the source comment
-# and once in the runtime log string. Verify those two exact forms instead of
-# counting the shared substring, which made build 91 fail before compilation.
-if s.count("/* ml1159 zero-size TEXTURE2D:") != 1 or s.count("[madeira-d3d12] ml1159 zero-size TEXTURE2D ") != 1 or s.count("g_last_swap_width") < 3:
+if s.count("/* ml1159 zero-size TEXTURE2D:") != 1 or s.count("g_last_swap_width") < 3:
     raise SystemExit("ml1159 post-patch verification failed")
-if s.count("/* ml1161 resource-desc:") != 1 or s.count("[madeira-d3d12] ml1161 resource-desc ") != 1:
+if s.count("/* ml1161 resource-desc:") != 1:
     raise SystemExit("ml1161 post-patch verification failed")
 if d.count("/* ml1160 fallback-current:") != 1 or d.count("[dxgi-modes] ml1160 fallback-current ") != 1:
     raise SystemExit("ml1160 post-patch verification failed")
-print("Spider-Man patches applied: ml1159 Metal size + ml1160 DXGI mode + ml1161 D3D12 descriptor consistency (ARM64EC-safe globals)")
+print("Spider-Man patches applied: ml1159 Metal size + ml1160 DXGI mode + ml1161 descriptor consistency (minimal ARM64EC C)")
