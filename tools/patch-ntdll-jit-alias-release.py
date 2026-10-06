@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Patch virtual_ios.c: retire stale aliases, fix iOS RWX write-drop, and split tail reuse."""
+"""Patch virtual_ios.c: retire stale aliases, fix iOS RWX write-drop, split tail reuse,
+and auto-enable the existing W^X fast path for official Steam FH4."""
 from pathlib import Path
 import sys
 
@@ -144,4 +145,47 @@ if (src.count(helper_sig) != 1 or src.count(hook) != 1 or
         src.count(marker) != 1 or src.count(tail_marker) != 1):
     raise SystemExit("post-patch verification failed")
 path.write_text(src)
+
+# Steam FH4 build 83 does not crash; it spends millions of Mach round trips
+# emulating ordinary stores to one PAGE_EXECUTE_READWRITE SMC page. Madeira
+# already has the ml691/ml694 page-granular W^X fast path for exactly this:
+# after 32 faults it makes the translated guest page host RW (never RWX), so
+# later stores land directly. ml695 left it opt-in globally because of stale
+# translation/address-reuse hazards. Auto-enable it ONLY for the official Steam
+# FH4 install when the user has not explicitly set MADEIRA_WX=0/1.
+signal_path = path.with_name("signal_arm64_ios.c")
+sig = signal_path.read_text()
+wx_old = '''        const char *e = getenv( "MADEIRA_WX" );
+        v = (e && e[0] == '1') ? 1 : 0;
+        dprintf( STDERR_FILENO, "[wx] ml695 MADEIRA_WX=%s -> W^X %s (experimental, opt-in; threshold 32, %d slots)\\n",
+                 e ? e : "(unset)", v ? "ENABLED" : "DISABLED", IOS_WX_MAX );'''
+wx_new = '''        const char *e = getenv( "MADEIRA_WX" );
+        const char *steam_path = getenv( "SteamAppPath" );
+        int steam_fh4 = steam_path && strstr( steam_path, "steamapps" ) &&
+                        strstr( steam_path, "ForzaHorizon4" );
+
+        /* ml1157: Build 83 official Steam FH4 spent >3.5M faults at one JIT
+         * store site targeting one SMC page while W^X was OFF. This existing
+         * fast path is exactly the measured cure: after 32 writes to a page,
+         * guest RX becomes host RW (not RWX), eliminating per-store Mach
+         * exceptions. Keep ml695's safe default for every other title and
+         * honor an explicit MADEIRA_WX=0/1 override. */
+        if (e) v = (e[0] == '1') ? 1 : 0;
+        else v = steam_fh4 ? 1 : 0;
+        dprintf( STDERR_FILENO,
+                 "[wx] ml1157 MADEIRA_WX=%s steam-fh4=%d -> W^X %s "
+                 "(threshold 32, %d slots)\\n",
+                 e ? e : "(unset)", steam_fh4,
+                 v ? "ENABLED" : "DISABLED", IOS_WX_MAX );'''
+wx_marker = "[wx] ml1157"
+if wx_marker not in sig:
+    if sig.count(wx_old) != 1:
+        raise SystemExit(f"Steam FH4 W^X anchor count={sig.count(wx_old)}, expected 1")
+    sig = sig.replace(wx_old, wx_new, 1)
+signal_path.write_text(sig)
+
+if sig.count(wx_marker) != 1:
+    raise SystemExit("Steam FH4 W^X post-patch verification failed")
+
 print(f"{path}: alias retirement + RWX write-drop ml1154 + tail split ml1156")
+print(f"{signal_path}: Steam FH4 auto W^X ml1157")
