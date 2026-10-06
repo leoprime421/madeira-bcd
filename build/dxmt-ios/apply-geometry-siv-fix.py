@@ -1,8 +1,14 @@
 #!/usr/bin/env python3
-"""Apply Madeira's narrow DXBC geometry-shader SIV compatibility fix."""
+"""Apply Madeira's narrow DXBC geometry-shader SIV compatibility fix.
+
+Build 86 also applies the source-backed Spider-Man graphics fixes before DXMT
+and madeira-d3d12 are compiled. Keeping this hook here makes a clean CI checkout
+receive the exact same fixes every time rather than relying on a dirty submodule.
+"""
 
 from pathlib import Path
 import re
+import subprocess
 import sys
 
 if len(sys.argv) != 2:
@@ -28,31 +34,38 @@ has_clip = "case D3D10_SB_NAME_CLIP_DISTANCE:" in input_siv
 has_cull = "case D3D10_SB_NAME_CULL_DISTANCE:" in input_siv
 if has_clip and has_cull:
     print("geometry shader CLIP_DISTANCE/CULL_DISTANCE cases already present")
-    raise SystemExit(0)
-if has_clip or has_cull:
+elif has_clip or has_cull:
     raise SystemExit("geometry shader SIV switch has only one of the required cases; refusing a partial patch")
+else:
+    pattern = re.compile(
+        r'(switch \(siv\) \{\s*)'
+        r'case D3D10_SB_NAME_POSITION:\s*break;\s*'
+        r'default:\s*assert\(0 && "Unexpected/unhandled geometry shader siv"\);',
+        re.S,
+    )
+    matches = list(pattern.finditer(input_siv))
+    if len(matches) != 1:
+        raise SystemExit(f"expected exactly one known geometry shader SIV switch in {path}; found {len(matches)}")
 
-pattern = re.compile(
-    r'(switch \(siv\) \{\s*)'
-    r'case D3D10_SB_NAME_POSITION:\s*break;\s*'
-    r'default:\s*assert\(0 && "Unexpected/unhandled geometry shader siv"\);',
-    re.S,
-)
-matches = list(pattern.finditer(input_siv))
-if len(matches) != 1:
-    raise SystemExit(f"expected exactly one known geometry shader SIV switch in {path}; found {len(matches)}")
+    replacement = (
+        "switch (siv) {\n"
+        "    case D3D10_SB_NAME_CLIP_DISTANCE:\n"
+        "    case D3D10_SB_NAME_CULL_DISTANCE:\n"
+        "    case D3D10_SB_NAME_POSITION:\n"
+        "      break;\n"
+        "    default:\n"
+        "      assert(0 && \"Unexpected/unhandled geometry shader siv\");"
+    )
+    input_siv = pattern.sub(replacement, input_siv, count=1)
+    gs = gs[:decl_start] + input_siv + gs[decl_end:]
+    source = source[:start] + gs + source[end:]
+    path.write_text(source)
+    print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
 
-replacement = (
-    "switch (siv) {\n"
-    "    case D3D10_SB_NAME_CLIP_DISTANCE:\n"
-    "    case D3D10_SB_NAME_CULL_DISTANCE:\n"
-    "    case D3D10_SB_NAME_POSITION:\n"
-    "      break;\n"
-    "    default:\n"
-    "      assert(0 && \"Unexpected/unhandled geometry shader siv\");"
-)
-input_siv = pattern.sub(replacement, input_siv, count=1)
-gs = gs[:decl_start] + input_siv + gs[decl_end:]
-source = source[:start] + gs + source[end:]
-path.write_text(source)
-print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
+# Build 86: this build hook runs before the native DXMT archive and before the
+# madeira_d3d12 PE runtime are compiled. Apply the deterministic zero-dimension
+# texture recovery and iOS current-display-mode fallback to the checked-out
+# sources. The patcher is idempotent and verifies every anchor.
+repo_root = Path(__file__).resolve().parents[2]
+patch86 = repo_root / "tools/patch-spiderman-build86.py"
+subprocess.run([sys.executable, str(patch86), str(repo_root)], check=True)
