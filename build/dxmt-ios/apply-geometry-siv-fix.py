@@ -9,6 +9,8 @@ intentionally present once in a source comment and once in the runtime log.
 Build 88 adds ml1161 so a recovered 0x0 drawable updates the D3D12 resource
 descriptor itself before allocation/bookkeeping, not only the Metal texture.
 Build 89 retries ml1161 with the actual resource-creation anchor used by main.
+Build 90 moves ml1161 into the function's existing resolved_desc so the ARM64EC
+C compiler does not see a second descriptor declaration in the hot block.
 """
 
 from pathlib import Path
@@ -67,7 +69,7 @@ else:
     path.write_text(source)
     print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
 
-# Build 86/87/88/89: this hook runs before the native DXMT archive and before
+# Build 86/87/88/89/90: this hook runs before the native DXMT archive and before
 # the madeira_d3d12 PE runtime are compiled. Apply the deterministic zero-dimension
 # texture recovery, D3D12 descriptor consistency fix and iOS current-mode
 # fallback to the checked-out sources. The patcher is idempotent and verifies
