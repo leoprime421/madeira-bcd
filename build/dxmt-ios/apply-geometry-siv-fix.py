@@ -15,6 +15,8 @@ last swapchain dimensions are volatile LONGs and are read/written directly.
 Build 92 fixes the ml1159 verifier itself: the marker intentionally exists in
 both a source comment and the runtime log string, so substring count == 1 was
 incorrect and stopped CI before madeira-d3d12 compilation even began.
+Build 93 reduces ml1159/ml1161 to minimal ARM64EC-safe C: no diagnostic
+counters, temporary locals, or formatted runtime logging in the repaired paths.
 """
 
 from pathlib import Path
@@ -73,7 +75,7 @@ else:
     path.write_text(source)
     print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
 
-# Build 86..92: apply the Spider-Man D3D12/DXGI fixes to the clean checkout
+# Build 86..93: apply the Spider-Man D3D12/DXGI fixes to the clean checkout
 # before both the native DXMT archive and madeira_d3d12 PE runtime are built.
 repo_root = Path(__file__).resolve().parents[2]
 patch86 = repo_root / "tools/patch-spiderman-build86.py"
