@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Patch virtual_ios.c: retire stale aliases, fix iOS RWX write-drop, split tail reuse,
-and auto-enable the existing W^X fast path for official Steam FH4."""
+auto-enable the existing W^X fast path for official Steam FH4, and apply the
+per-process late-image alias router used by Build 85."""
 from pathlib import Path
+import subprocess
 import sys
 
 path = Path(sys.argv[1] if len(sys.argv) > 1 else "build/ntdll-unix/virtual_ios.c")
@@ -187,5 +189,12 @@ signal_path.write_text(sig)
 if sig.count(wx_marker) != 1:
     raise SystemExit("Steam FH4 W^X post-patch verification failed")
 
-print(f"{path}: alias retirement + RWX write-drop ml1154 + tail split ml1156")
+# Build 85: once the existing virtual_ios patches have landed, route late PE
+# aliases to the FEX instance belonging to the mapping PEB. Keeping this as a
+# separate patcher makes the multiprocess lifetime change independently
+# reviewable while preserving this workflow's established invocation point.
+mp_patch = Path(__file__).with_name("patch-ntdll-jit-alias-multiprocess.py")
+subprocess.run([sys.executable, str(mp_patch), str(path)], check=True)
+
+print(f"{path}: alias retirement + RWX write-drop ml1154 + tail split ml1156 + multiprocess aliases ml1158")
 print(f"{signal_path}: Steam FH4 auto W^X ml1157")
