@@ -50,10 +50,12 @@ if mode_marker not in d:
     d = d.replace(anchor, replacement, 1)
     dxgi.write_text(d)
 
-# Strict verification: exactly one implementation marker each.
+# Strict verification. ml1160 intentionally appears twice: once in the source
+# comment and once in the runtime log string. The old == 1 check made Build 86
+# fail after successfully applying the patch.
 s = mad.read_text(); d = dxgi.read_text()
 if s.count(marker) != 1 or s.count("g_last_swap_width") < 3:
     raise SystemExit("ml1159 post-patch verification failed")
-if d.count(mode_marker) != 1:
+if d.count("/* ml1160 fallback-current:") != 1 or d.count("[dxgi-modes] ml1160 fallback-current ") != 1:
     raise SystemExit("ml1160 post-patch verification failed")
 print("Build 86 patches applied: ml1159 D3D12 zero-size recovery + ml1160 DXGI current-mode fallback")
