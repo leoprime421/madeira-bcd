@@ -12,6 +12,9 @@ Build 89 retries ml1161 with the actual resource-creation anchor used by main.
 Build 90 moves ml1161 into the function's existing resolved_desc.
 Build 91 avoids InterlockedCompareExchange as an ARM64EC mingw rvalue; the
 last swapchain dimensions are volatile LONGs and are read/written directly.
+Build 92 fixes the ml1159 verifier itself: the marker intentionally exists in
+both a source comment and the runtime log string, so substring count == 1 was
+incorrect and stopped CI before madeira-d3d12 compilation even began.
 """
 
 from pathlib import Path
@@ -70,7 +73,7 @@ else:
     path.write_text(source)
     print("accepted geometry shader POSITION, CLIP_DISTANCE, and CULL_DISTANCE declarations")
 
-# Build 86..91: apply the Spider-Man D3D12/DXGI fixes to the clean checkout
+# Build 86..92: apply the Spider-Man D3D12/DXGI fixes to the clean checkout
 # before both the native DXMT archive and madeira_d3d12 PE runtime are built.
 repo_root = Path(__file__).resolve().parents[2]
 patch86 = repo_root / "tools/patch-spiderman-build86.py"
