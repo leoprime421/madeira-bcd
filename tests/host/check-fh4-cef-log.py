@@ -19,6 +19,7 @@ def function(source, signature):
 
 
 create = function(proc, 'NTSTATUS WINAPI NtCreateUserProcess(')
+assert '[fh4-relaunch] REFUSING' in create and create.index('[fh4-relaunch] REFUSING') < create.index('create_startup_info( attr.ObjectName')
 assert 'fh4_cef_child_args(' in create and create.index('fh4_cef_child_args(') < create.index('create_startup_info( attr.ObjectName')
 
 code = '''

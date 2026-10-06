@@ -1772,6 +1772,19 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         }
     }
 
+    /* madeira-bcd: Forza Horizon 4 starts itself again once the player picks Continue (device log
+     * 2026-10-05 20:25, build 80: ForzaHorizon4.exe from thread 0030 at +130 s, then every thread of
+     * the first process idle). A started process is a headless pseudo-process here ("no guest
+     * window"), so the second copy can never show the game while the first waits for it: blank
+     * screen. The spawn is refused and the game goes on in this process. */
+    if (sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ))
+    {
+        static int fh4_relaunch_n;
+        if (fh4_relaunch_n++ < 8)
+            dprintf( 2, "[fh4-relaunch] REFUSING ForzaHorizon4.exe starting itself again (a child has no window)\n" );
+        return STATUS_ACCESS_DENIED;
+    }
+
     /* madeira-bcd: env.MADEIRA_CHILD_ARGS -- see child_extra_args. */
     {
         const char *extra = child_extra_args( getenv( "MADEIRA_CHILD_ARGS" ), params->ImagePathName.Buffer,
