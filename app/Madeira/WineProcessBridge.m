@@ -919,8 +919,8 @@ static void *wine_process_thread(void *arg) {
                  * traces plus winsock/dnsapi warnings, a few dozen lines per session. */
                 const char *fh4_exe = getenv("MADEIRA_EXE");
                 if (fh4_exe && strstr(fh4_exe, "ForzaHorizon4.exe")) {
-                    setenv("WINEDEBUG", "err+all,err-virtual,trace+wininet,trace+winhttp,warn+winsock,warn+dnsapi", 1);
-                    LOG("WINEDEBUG += wininet/winhttp trace, winsock/dnsapi warnings (Forza Horizon 4 network diagnosis)");
+                    setenv("WINEDEBUG", "err+all,err-virtual,trace+wininet,trace+winhttp,warn+winsock,warn+dnsapi,trace+secur32,warn+crypt,trace+chain", 1);
+                    LOG("WINEDEBUG += wininet/winhttp/secur32/chain trace, winsock/dnsapi/crypt warnings (Forza Horizon 4 network diagnosis)");
                 }
             }
         }
