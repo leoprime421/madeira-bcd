@@ -8,11 +8,12 @@ can then remain in a tight poll when the byte is updated by another translated
 thread.  Madeira sets MADEIRA_FEX_NO_RCPC=1 only for FH4; keep the default
 feature set for every other title.
 
-Build trigger note: ml1157 auto-enables the existing page-granular W^X fast
-path only for official Steam FH4 after Build 83 measured millions of Mach store
-faults on one SMC page. The implementation lives in
-patch-ntdll-jit-alias-release.py; this file is in build-ipa.yml's push filter,
-so this revision intentionally starts the IPA build containing that fix.
+Build trigger note: Build 85 carries ml1158, which routes late PE/JIT aliases
+to the FEX emulator owned by the PEB that actually mapped the image. Build 84
+Spider-Man showed wintrust.dll mapped by the parent being pushed into the
+crash-handler child's alias table; the parent then saw its pool-copy RIP as
+NOEXEC. The implementation is applied by patch-ntdll-jit-alias-release.py;
+this file remains the filtered CI trigger so the IPA contains that fix.
 """
 import sys
 
