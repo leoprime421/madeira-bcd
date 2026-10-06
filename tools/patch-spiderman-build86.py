@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Build 86: fix Spider-Man D3D12 zero-size Metal texture + empty DXGI modes.
+"""Spider-Man graphics fixes: zero-size textures, DXGI modes and descriptor consistency.
 
 Build 85 reaches a real D3D12 swapchain (1280x720 / 1408x648), then Metal
 asserts because a later D3D12 TEXTURE2D descriptor reaches winemetal as 0x0.
-Madeira also reports no usable display modes even though the current mode is
-known.  Keep both fixes iOS/Madeira-local and source-backed.
+Build 87 proved the Metal-side recovery works, but also proved the D3D12
+resource object still retained the original 0x0 descriptor.  Keep both sides
+consistent so GetDesc/allocation/resource bookkeeping see the same dimensions.
 """
 from pathlib import Path
 import sys
@@ -38,6 +39,22 @@ if marker not in s:
     s = s.replace(swap_anchor, swap_new, 1)
     mad.write_text(s)
 
+# Build 88 / ml1161: Build 87 proved the Metal texture is repaired to the
+# swapchain size, but the D3D12 resource still logs/returns 0x0 because r->desc
+# is copied from the original descriptor before mad_fill_texinfo repairs only a
+# temporary WMTTextureInfo.  Normalize the local descriptor pointer before the
+# resource copies it and before allocation info / placed-resource setup consume
+# it.  This keeps D3D12 bookkeeping, GetDesc() and Metal in one geometry.
+s = mad.read_text()
+desc_marker = "ml1161 resource-desc"
+if desc_marker not in s:
+    desc_anchor = """    r->desc = *desc;\n    if (!mad_resource_alloc_info(d, desc, &r->alloc_info)) {"""
+    desc_replacement = """    /* ml1161 resource-desc: ml1159 repaired only the temporary Metal\n     * texture descriptor.  Keep the actual D3D12_RESOURCE_DESC consistent as\n     * well, otherwise GetDesc()/allocation bookkeeping still observes 0x0. */\n    D3D12_RESOURCE_DESC madeira_desc;\n    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&\n        (!desc->Width || !desc->Height)) {\n        UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);\n        UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);\n        if (sw && sh) {\n            UINT64 oldw = desc->Width;\n            UINT oldh = desc->Height;\n            madeira_desc = *desc;\n            if (!madeira_desc.Width) madeira_desc.Width = sw;\n            if (!madeira_desc.Height) madeira_desc.Height = sh;\n            desc = &madeira_desc;\n            {\n                static LONG said_desc;\n                if (InterlockedIncrement(&said_desc) <= 16)\n                    d3d12_log(\"[madeira-d3d12] ml1161 resource-desc %llux%u -> %llux%u (swapchain)\\n\",\n                              (unsigned long long)oldw, oldh,\n                              (unsigned long long)desc->Width, desc->Height);\n            }\n        }\n    }\n    r->desc = *desc;\n    if (!mad_resource_alloc_info(d, desc, &r->alloc_info)) {"""
+    if s.count(desc_anchor) != 1:
+        raise SystemExit(f"ml1161 resource-desc anchor changed (found {s.count(desc_anchor)})")
+    s = s.replace(desc_anchor, desc_replacement, 1)
+    mad.write_text(s)
+
 # --- DXGI: iOS/headless WSI can enumerate zero modes while current mode works.
 # Expose that current mode as a single valid DXGI mode instead of returning 0.
 d = dxgi.read_text()
@@ -51,11 +68,13 @@ if mode_marker not in d:
     dxgi.write_text(d)
 
 # Strict verification. ml1160 intentionally appears twice: once in the source
-# comment and once in the runtime log string. The old == 1 check made Build 86
-# fail after successfully applying the patch.
+# comment and once in the runtime log string. ml1161 likewise has one source
+# marker and one runtime marker.
 s = mad.read_text(); d = dxgi.read_text()
 if s.count(marker) != 1 or s.count("g_last_swap_width") < 3:
     raise SystemExit("ml1159 post-patch verification failed")
+if s.count("/* ml1161 resource-desc:") != 1 or s.count("[madeira-d3d12] ml1161 resource-desc ") != 1:
+    raise SystemExit("ml1161 post-patch verification failed")
 if d.count("/* ml1160 fallback-current:") != 1 or d.count("[dxgi-modes] ml1160 fallback-current ") != 1:
     raise SystemExit("ml1160 post-patch verification failed")
-print("Build 86 patches applied: ml1159 D3D12 zero-size recovery + ml1160 DXGI current-mode fallback")
+print("Spider-Man patches applied: ml1159 Metal size + ml1160 DXGI mode + ml1161 D3D12 descriptor consistency")
