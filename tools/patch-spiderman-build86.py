@@ -26,30 +26,99 @@ if marker not in s:
         raise SystemExit("ml1159 global anchor changed")
     s = s.replace(global_anchor, global_new, 1)
 
-    tex_old = """    ti->pixel_format = *pf;\n    ti->width = (uint32_t)desc->Width;\n    ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;\n    ti->depth = 1;"""
-    tex_new = """    ti->pixel_format = *pf;\n    ti->width = (uint32_t)desc->Width;\n    ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;\n    /* ml1159: Spider-Man build 85 creates the real 1280x720/1408x648\n     * swapchain successfully, then a later TEXTURE2D reaches Metal as 0x0.\n     * Metal asserts instead of returning an HRESULT.  Windows never hands\n     * Metal a zero-size texture; for this drawable-adjacent case recover the\n     * missing dimensions from the last valid swapchain rather than inventing\n     * 1x1.  Other invalid dimensions are rejected below. */\n    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&\n        (!ti->width || !ti->height)) {\n        UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);\n        UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);\n        if (sw && sh) {\n            static LONG said;\n            UINT oldw = ti->width, oldh = ti->height;\n            if (!ti->width) ti->width = sw;\n            if (!ti->height) ti->height = sh;\n            if (InterlockedIncrement(&said) <= 16)\n                d3d12_log(\"[madeira-d3d12] ml1159 zero-size TEXTURE2D %ux%u -> swapchain %ux%u\\n\",\n                          oldw, oldh, ti->width, ti->height);\n        }\n    }\n    if (!ti->width || !ti->height) {\n        d3d12_log(\"[madeira-d3d12] ml1159 refusing invalid texture dimensions %ux%u dim=%u\\n\",\n                  ti->width, ti->height, (unsigned)desc->Dimension);\n        return 0;\n    }\n    ti->depth = 1;"""
+    tex_old = """    ti->pixel_format = *pf;
+    ti->width = (uint32_t)desc->Width;
+    ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;
+    ti->depth = 1;"""
+    tex_new = """    ti->pixel_format = *pf;
+    ti->width = (uint32_t)desc->Width;
+    ti->height = desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE1D ? 1 : desc->Height;
+    /* ml1159: Spider-Man build 85 creates the real 1280x720/1408x648
+     * swapchain successfully, then a later TEXTURE2D reaches Metal as 0x0.
+     * Metal asserts instead of returning an HRESULT.  Windows never hands
+     * Metal a zero-size texture; for this drawable-adjacent case recover the
+     * missing dimensions from the last valid swapchain rather than inventing
+     * 1x1.  Other invalid dimensions are rejected below. */
+    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        (!ti->width || !ti->height)) {
+        UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);
+        UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);
+        if (sw && sh) {
+            static LONG said;
+            UINT oldw = ti->width, oldh = ti->height;
+            if (!ti->width) ti->width = sw;
+            if (!ti->height) ti->height = sh;
+            if (InterlockedIncrement(&said) <= 16)
+                d3d12_log("[madeira-d3d12] ml1159 zero-size TEXTURE2D %ux%u -> swapchain %ux%u\n",
+                          oldw, oldh, ti->width, ti->height);
+        }
+    }
+    if (!ti->width || !ti->height) {
+        d3d12_log("[madeira-d3d12] ml1159 refusing invalid texture dimensions %ux%u dim=%u\n",
+                  ti->width, ti->height, (unsigned)desc->Dimension);
+        return 0;
+    }
+    ti->depth = 1;"""
     if s.count(tex_old) != 1:
         raise SystemExit("ml1159 texinfo anchor changed")
     s = s.replace(tex_old, tex_new, 1)
 
-    swap_anchor = """static HRESULT mad_swap_make_buffers(struct mad_swapchain *s) {\n    D3D12_RESOURCE_DESC rd;\n    UINT i, n = s->desc.BufferCount ? s->desc.BufferCount : 2;\n    int is_depth;"""
-    swap_new = swap_anchor + """\n    /* ml1159: publish only a valid drawable size.  The resource builder may\n     * use it to repair a later zero-dimension 2D drawable resource. */\n    if (s->desc.Width && s->desc.Height) {\n        InterlockedExchange(&g_last_swap_width, (LONG)s->desc.Width);\n        InterlockedExchange(&g_last_swap_height, (LONG)s->desc.Height);\n    }"""
+    swap_anchor = """static HRESULT mad_swap_make_buffers(struct mad_swapchain *s) {
+    D3D12_RESOURCE_DESC rd;
+    UINT i, n = s->desc.BufferCount ? s->desc.BufferCount : 2;
+    int is_depth;"""
+    swap_new = swap_anchor + """
+    /* ml1159: publish only a valid drawable size.  The resource builder may
+     * use it to repair a later zero-dimension 2D drawable resource. */
+    if (s->desc.Width && s->desc.Height) {
+        InterlockedExchange(&g_last_swap_width, (LONG)s->desc.Width);
+        InterlockedExchange(&g_last_swap_height, (LONG)s->desc.Height);
+    }"""
     if s.count(swap_anchor) != 1:
         raise SystemExit("ml1159 swapchain anchor changed")
     s = s.replace(swap_anchor, swap_new, 1)
     mad.write_text(s)
 
-# Build 88 / ml1161: Build 87 proved the Metal texture is repaired to the
+# Build 88/89 / ml1161: Build 87 proved the Metal texture is repaired to the
 # swapchain size, but the D3D12 resource still logs/returns 0x0 because r->desc
 # is copied from the original descriptor before mad_fill_texinfo repairs only a
-# temporary WMTTextureInfo.  Normalize the local descriptor pointer before the
-# resource copies it and before allocation info / placed-resource setup consume
-# it.  This keeps D3D12 bookkeeping, GetDesc() and Metal in one geometry.
+# temporary WMTTextureInfo. Normalize the descriptor before the resource copies
+# it so r->size, GetDesc() and all later bookkeeping see the repaired geometry.
 s = mad.read_text()
 desc_marker = "ml1161 resource-desc"
 if desc_marker not in s:
-    desc_anchor = """    r->desc = *desc;\n    if (!mad_resource_alloc_info(d, desc, &r->alloc_info)) {"""
-    desc_replacement = """    /* ml1161 resource-desc: ml1159 repaired only the temporary Metal\n     * texture descriptor.  Keep the actual D3D12_RESOURCE_DESC consistent as\n     * well, otherwise GetDesc()/allocation bookkeeping still observes 0x0. */\n    D3D12_RESOURCE_DESC madeira_desc;\n    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&\n        (!desc->Width || !desc->Height)) {\n        UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);\n        UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);\n        if (sw && sh) {\n            UINT64 oldw = desc->Width;\n            UINT oldh = desc->Height;\n            madeira_desc = *desc;\n            if (!madeira_desc.Width) madeira_desc.Width = sw;\n            if (!madeira_desc.Height) madeira_desc.Height = sh;\n            desc = &madeira_desc;\n            {\n                static LONG said_desc;\n                if (InterlockedIncrement(&said_desc) <= 16)\n                    d3d12_log(\"[madeira-d3d12] ml1161 resource-desc %llux%u -> %llux%u (swapchain)\\n\",\n                              (unsigned long long)oldw, oldh,\n                              (unsigned long long)desc->Width, desc->Height);\n            }\n        }\n    }\n    r->desc = *desc;\n    if (!mad_resource_alloc_info(d, desc, &r->alloc_info)) {"""
+    desc_anchor = """    r->size = desc->Width;
+    r->heap = heap_type;
+    r->desc = *desc;
+    r->owner = d;"""
+    desc_replacement = """    /* ml1161 resource-desc: ml1159 repaired only the temporary Metal
+     * texture descriptor. Keep the actual D3D12_RESOURCE_DESC consistent as
+     * well, otherwise GetDesc()/resource bookkeeping still observes 0x0. */
+    D3D12_RESOURCE_DESC madeira_desc;
+    if (desc->Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE2D &&
+        (!desc->Width || !desc->Height)) {
+        UINT sw = (UINT)InterlockedCompareExchange(&g_last_swap_width, 0, 0);
+        UINT sh = (UINT)InterlockedCompareExchange(&g_last_swap_height, 0, 0);
+        if (sw && sh) {
+            UINT64 oldw = desc->Width;
+            UINT oldh = desc->Height;
+            madeira_desc = *desc;
+            if (!madeira_desc.Width) madeira_desc.Width = sw;
+            if (!madeira_desc.Height) madeira_desc.Height = sh;
+            desc = &madeira_desc;
+            {
+                static LONG said_desc;
+                if (InterlockedIncrement(&said_desc) <= 16)
+                    d3d12_log("[madeira-d3d12] ml1161 resource-desc %llux%u -> %llux%u (swapchain)\n",
+                              (unsigned long long)oldw, oldh,
+                              (unsigned long long)desc->Width, desc->Height);
+            }
+        }
+    }
+    r->size = desc->Width;
+    r->heap = heap_type;
+    r->desc = *desc;
+    r->owner = d;"""
     if s.count(desc_anchor) != 1:
         raise SystemExit(f"ml1161 resource-desc anchor changed (found {s.count(desc_anchor)})")
     s = s.replace(desc_anchor, desc_replacement, 1)
@@ -60,8 +129,43 @@ if desc_marker not in s:
 d = dxgi.read_text()
 mode_marker = "ml1160 fallback-current"
 if mode_marker not in d:
-    anchor = """      dstModeId += 1;\n    }\n\n    /* MADEIRA (ml1190): opt-in diagnostics, DXMT_DISPLAY_MODE_STATS=1. */"""
-    replacement = """      dstModeId += 1;\n    }\n\n#ifdef DXMT_IOS\n    /* ml1160 fallback-current: the Madeira/iOS WSI backend can report a\n     * current mode while exposing no enumerable mode list. Spider-Man treats\n     * an empty DXGI list as \"Could not find any display mode\". Publish the\n     * real current mode, preserving the requested DXGI format. */\n    if (dstModeId == 0) {\n      wsi::WsiMode currentMode = {};\n      if (wsi::getCurrentDisplayMode(monitor_, &currentMode) &&\n          currentMode.width && currentMode.height) {\n        if (!currentMode.refreshRate.numerator || !currentMode.refreshRate.denominator) {\n          currentMode.refreshRate.numerator = 60;\n          currentMode.refreshRate.denominator = 1;\n        }\n        if (pDesc != nullptr) {\n          DXGI_MODE_DESC1 mode = ConvertDisplayMode(currentMode);\n          mode.Format = EnumFormat;\n          modeList.push_back(mode);\n        }\n        dstModeId = 1;\n        static std::atomic<unsigned> fallbackLogs{0};\n        if (fallbackLogs.fetch_add(1, std::memory_order_relaxed) < 16)\n          Logger::warn(str::format(\"[dxgi-modes] ml1160 fallback-current \",\n              currentMode.width, \"x\", currentMode.height, \" @ \",\n              currentMode.refreshRate.numerator, \"/\", currentMode.refreshRate.denominator,\n              \" format=\", unsigned(EnumFormat)));\n      }\n    }\n#endif\n\n    /* MADEIRA (ml1190): opt-in diagnostics, DXMT_DISPLAY_MODE_STATS=1. */"""
+    anchor = """      dstModeId += 1;
+    }
+
+    /* MADEIRA (ml1190): opt-in diagnostics, DXMT_DISPLAY_MODE_STATS=1. */"""
+    replacement = """      dstModeId += 1;
+    }
+
+#ifdef DXMT_IOS
+    /* ml1160 fallback-current: the Madeira/iOS WSI backend can report a
+     * current mode while exposing no enumerable mode list. Spider-Man treats
+     * an empty DXGI list as "Could not find any display mode". Publish the
+     * real current mode, preserving the requested DXGI format. */
+    if (dstModeId == 0) {
+      wsi::WsiMode currentMode = {};
+      if (wsi::getCurrentDisplayMode(monitor_, &currentMode) &&
+          currentMode.width && currentMode.height) {
+        if (!currentMode.refreshRate.numerator || !currentMode.refreshRate.denominator) {
+          currentMode.refreshRate.numerator = 60;
+          currentMode.refreshRate.denominator = 1;
+        }
+        if (pDesc != nullptr) {
+          DXGI_MODE_DESC1 mode = ConvertDisplayMode(currentMode);
+          mode.Format = EnumFormat;
+          modeList.push_back(mode);
+        }
+        dstModeId = 1;
+        static std::atomic<unsigned> fallbackLogs{0};
+        if (fallbackLogs.fetch_add(1, std::memory_order_relaxed) < 16)
+          Logger::warn(str::format("[dxgi-modes] ml1160 fallback-current ",
+              currentMode.width, "x", currentMode.height, " @ ",
+              currentMode.refreshRate.numerator, "/", currentMode.refreshRate.denominator,
+              " format=", unsigned(EnumFormat)));
+      }
+    }
+#endif
+
+    /* MADEIRA (ml1190): opt-in diagnostics, DXMT_DISPLAY_MODE_STATS=1. */"""
     if d.count(anchor) != 1:
         raise SystemExit("ml1160 DXGI mode anchor changed")
     d = d.replace(anchor, replacement, 1)
