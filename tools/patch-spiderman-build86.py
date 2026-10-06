@@ -147,7 +147,10 @@ if "ml1160 fallback-current" not in d:
     dxgi.write_text(d)
 
 s = mad.read_text(); d = dxgi.read_text()
-if s.count("ml1159 zero-size TEXTURE2D") != 1 or s.count("g_last_swap_width") < 3:
+# ml1159 intentionally appears twice after patching: once in the source comment
+# and once in the runtime log string. Verify those two exact forms instead of
+# counting the shared substring, which made build 91 fail before compilation.
+if s.count("/* ml1159 zero-size TEXTURE2D:") != 1 or s.count("[madeira-d3d12] ml1159 zero-size TEXTURE2D ") != 1 or s.count("g_last_swap_width") < 3:
     raise SystemExit("ml1159 post-patch verification failed")
 if s.count("/* ml1161 resource-desc:") != 1 or s.count("[madeira-d3d12] ml1161 resource-desc ") != 1:
     raise SystemExit("ml1161 post-patch verification failed")
