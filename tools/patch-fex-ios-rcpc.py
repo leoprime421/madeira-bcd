@@ -8,10 +8,11 @@ can then remain in a tight poll when the byte is updated by another translated
 thread.  Madeira sets MADEIRA_FEX_NO_RCPC=1 only for FH4; keep the default
 feature set for every other title.
 
-Build trigger note: ml1156 splits oversized recycled JIT tail carves in
-patch-ntdll-jit-alias-release.py, so a tiny FEX request no longer consumes an
-entire larger free carve. This file is in build-ipa.yml's push filter, so this
-revision intentionally starts the IPA build containing that fix.
+Build trigger note: ml1157 auto-enables the existing page-granular W^X fast
+path only for official Steam FH4 after Build 83 measured millions of Mach store
+faults on one SMC page. The implementation lives in
+patch-ntdll-jit-alias-release.py; this file is in build-ipa.yml's push filter,
+so this revision intentionally starts the IPA build containing that fix.
 """
 import sys
 
