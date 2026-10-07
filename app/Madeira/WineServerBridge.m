@@ -129,6 +129,42 @@ static void *wineserver_thread_func(void *arg) {
     return NULL;
 }
 
+/* madeira-bcd: the VC++ 2015-2022 runtime's own registration. Every session
+ * has Microsoft's x64 runtime DLLs (x86_64-vcruntime, WineProcessBridge.m) but
+ * the prefix never had the keys VC_redist writes, and Unreal's bootstrapper
+ * checks them: LEGO Batman: Legacy of the Dark Knight stops with "Microsoft
+ * Visual C++ 2015-2022 Redistributable (arm64)" (2026-10-07 13:54, build 94;
+ * Wine reports an ARM64 host, so it asks for the arm64 package). Appended to
+ * system.reg before the server parses it, once per key. */
+static void madeira_register_vc_runtimes(const char *prefix_path)
+{
+    static const char *const arches[] = { "x64", "arm64" };
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/system.reg", prefix_path);
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+    char *buf = (n > 0 && n < (256L << 20)) ? malloc((size_t)n + 1) : NULL;
+    size_t got = buf ? fread(buf, 1, (size_t)n, f) : 0;
+    fclose(f);
+    if (!buf) return;
+    buf[got] = 0;
+    FILE *out = NULL;
+    for (size_t i = 0; i < sizeof arches / sizeof arches[0]; i++) {
+        char key[128];
+        snprintf(key, sizeof(key), "[Software\\\\Microsoft\\\\VisualStudio\\\\14.0\\\\VC\\\\Runtimes\\\\%s]", arches[i]);
+        if (strstr(buf, key)) continue;
+        if (!out && !(out = fopen(path, "ab"))) break;
+        fprintf(out, "\n%s 1759190400\n#time=1dc31a2b0000000\n"
+                     "\"Bld\"=dword:0000898b\n\"Installed\"=dword:00000001\n"
+                     "\"Major\"=dword:0000000e\n\"Minor\"=dword:0000002c\n"
+                     "\"Rbld\"=dword:00000000\n\"Version\"=\"v14.44.35211.00\"\n", key);
+        wine_log_msg("[vcredist] registered VC++ 2015-2022 runtime 14.44 (%s) in system.reg", arches[i]);
+    }
+    if (out) fclose(out);
+    free(buf);
+}
+
 int wineserver_start(const char *prefix_path) {
     if (g_wineserver_running) {
         wine_log_msg("Wineserver already running");
@@ -150,6 +186,7 @@ int wineserver_start(const char *prefix_path) {
         extern void madeira_seed_prefix_if_needed(const char *prefix_path);
         madeira_seed_prefix_if_needed(prefix_path);
     }
+    madeira_register_vc_runtimes(prefix_path);
 
     g_wineserver_running = 1;
 
