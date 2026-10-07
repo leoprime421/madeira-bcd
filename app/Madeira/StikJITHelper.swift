@@ -174,6 +174,53 @@ enum StikJITHelper {
     /// enabled again, through Madeira, before a game can start.
     static var flaggedWithoutDebugger: Bool { jit_check_debugged() && !ready }
 
+    /// madeira-bcd: the executable window a non-relocatable x64 main image needs, or 0.
+    /// Looks at MADEIRA_EXE and, for Unreal's bootstrapper layout, the
+    /// <Project>/Binaries/Win64/*-Shipping.exe it starts. env.MADEIRA_EXE_WINDOW_MB
+    /// in the game's own file sets the size by hand (0 = never grow).
+    static func bigExeWindowSize() -> vm_address_t {
+        let mb16: vm_address_t = 16 << 20
+        if let cfg = getenv("MADEIRA_CFG_GAME").map({ String(cString: $0) }),
+           let v = GameProfile.values(ofFile: URL(fileURLWithPath: cfg))["env.MADEIRA_EXE_WINDOW_MB"], let mb = Int(v) {
+            return mb > 128 ? vm_address_t(min(mb, 1024)) << 20 : 0
+        }
+        guard let exe = getenv("MADEIRA_EXE").map({ String(cString: $0) }),
+              exe.count > 3, exe.hasPrefix("C:\\") || exe.hasPrefix("c:\\"),
+              let docs = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first else { return 0 }
+        let unix = docs.appendingPathComponent("wine/drive_c")
+            .appendingPathComponent(String(exe.dropFirst(3)).replacingOccurrences(of: "\\", with: "/"))
+        var candidates = [unix]
+        let dir = unix.deletingLastPathComponent()
+        let fm = FileManager.default
+        for sub in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] {
+            let bin = dir.appendingPathComponent(sub).appendingPathComponent("Binaries/Win64")
+            for f in (try? fm.contentsOfDirectory(atPath: bin.path)) ?? [] where f.lowercased().hasSuffix("-shipping.exe") {
+                candidates.append(bin.appendingPathComponent(f))
+            }
+        }
+        var need: vm_address_t = 0
+        for url in candidates {
+            guard let fh = try? FileHandle(forReadingFrom: url) else { continue }
+            defer { try? fh.close() }
+            guard let head = try? fh.read(upToCount: 4096), head.count >= 0x40 else { continue }
+            let b = [UInt8](head)
+            func u16(_ o: Int) -> Int { o + 2 <= b.count ? Int(b[o]) | Int(b[o + 1]) << 8 : 0 }
+            func u32(_ o: Int) -> Int { u16(o) | u16(o + 2) << 16 }
+            let pe = u32(0x3c)
+            guard pe > 0, pe + 0x58 <= b.count, b[pe] == 0x50, b[pe + 1] == 0x45,
+                  u16(pe + 4) == 0x8664, u16(pe + 0x18) == 0x20b else { continue }
+            let relocsStripped = u16(pe + 0x16) & 1 != 0
+            let imageBase = u32(pe + 0x30) | u32(pe + 0x34) << 32
+            let sizeOfImage = vm_address_t(u32(pe + 0x50))
+            if relocsStripped && imageBase == 0x140000000 && sizeOfImage > 0x8000000 {
+                let rounded = (sizeOfImage + mb16 - 1) & ~(mb16 - 1)
+                LogStore.shared.log("[exe-window] \(url.lastPathComponent): non-relocatable, \(sizeOfImage >> 20)MB at 0x140000000")
+                need = max(need, min(rounded, vm_address_t(1024) << 20))
+            }
+        }
+        return need
+    }
+
     /// Allocate a JIT memory pool via BRK #0xf00d WITHOUT detaching the debugger.
     /// The debugger stays attached so Wine can use BRK to prepare PE code pages.
     static func allocatePool(poolSize requestedPoolSize: Int = 128 * 1024 * 1024) -> (rx: UnsafeMutableRawPointer, rw: UnsafeMutableRawPointer, size: Int)? {
@@ -309,7 +356,7 @@ enum StikJITHelper {
         // hole above it ~628MB contiguous. The largest fixed-base image we ship
         // against ends at +117MB; ntdll hands the window to the first fixed map
         // of >=64MB that fits, and reads the size from WINE_IOS_EXE_WINDOW.
-        let exeWinSize: vm_address_t = 0x8000000           // 128MB
+        var exeWinSize: vm_address_t = 0x8000000           // 128MB (bigExeWindowSize() may grow it)
         func overlapsExeWindow(_ base: vm_address_t, _ len: vm_address_t) -> Bool {
             return base < exeWinBase + exeWinSize && base + len > exeWinBase
         }
@@ -391,6 +438,29 @@ enum StikJITHelper {
         let earlyPoolSize = vm_address_t(madeira_early_pool_size)
         if earlyPoolBase != 0 {
             vm_deallocate(mach_task_self_, earlyPoolBase, vm_size_t(earlyPoolSize))
+        }
+        // madeira-bcd: a non-relocatable main image larger than the 128MB window
+        // (LEGO Batman: Legacy of the Dark Knight's Shipping exe: 388MB at
+        // 0x140000000, chars 0x23 -- "failed to create main module ... c0000018",
+        // 2026-10-07 14:35, build 95). Grow the window over the start of the run
+        // above it before the pool is placed; ntdll releases base..size in one go.
+        let bigWin = bigExeWindowSize()
+        if windowHeld && bigWin > exeWinSize {
+            var ext = exeWinBase + exeWinSize
+            let extSize = bigWin - exeWinSize
+            if vm_allocate(mach_task_self_, &ext, vm_size_t(extSize), 0 /* FIXED */) == KERN_SUCCESS && ext == exeWinBase + exeWinSize {
+                _ = vm_protect(mach_task_self_, ext, vm_size_t(extSize), 0, VM_PROT_NONE)
+                exeWinSize = bigWin
+                setenv("WINE_IOS_EXE_WINDOW", String(format: "%lx:%lx", Int(exeWinBase), Int(exeWinSize)), 1)
+                LogStore.shared.log("[exe-window] grown to \(exeWinSize >> 20)MB for a non-relocatable main image "
+                    + "(the JIT pool gets less room)", level: .success)
+            } else {
+                if ext != exeWinBase + exeWinSize { vm_deallocate(mach_task_self_, ext, vm_size_t(extSize)) }
+                LogStore.shared.log("[exe-window] could NOT grow the window to \(bigWin >> 20)MB -- the game's "
+                    + "fixed-base exe will not load", level: .error)
+            }
+        }
+        if earlyPoolBase != 0 {
             LogStore.shared.log(String(format: "ml1040: released the early pool placeholder 0x%lx+%luMB for the debugger",
                                        Int(earlyPoolBase), Int(earlyPoolSize >> 20)))
         } else {
