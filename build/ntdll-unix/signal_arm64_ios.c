@@ -10932,6 +10932,8 @@ static int ios_subfloor_count;
 static unsigned long long ios_subfloor_hits;
 static unsigned long long ios_subfloor_unknown;
 static unsigned long long ios_subfloor_refused;   /* ml956: backing inaccessible */
+static int ios_subfloor_trunc;                    /* [subfloor-trunc], read at registration */
+static unsigned long long ios_subfloor_trunc_hits;
 
 void ios_register_subfloor_image( unsigned long long pref_base, unsigned long long size,
                                   unsigned long long real_base );
@@ -10941,6 +10943,10 @@ void ios_register_subfloor_image( unsigned long long pref_base, unsigned long lo
     int i;
 
     if (!pref_base || !size || pref_base >= IOS_SUBFLOOR_FLOOR) return;
+    {   /* getenv here, never in the fault handler */
+        const char *e = getenv( "MADEIRA_SUBFLOOR_TRUNC" );
+        ios_subfloor_trunc = !(e && e[0] == '0');
+    }
     for (i = 0; i < ios_subfloor_count; i++)
         if (ios_subfloor[i].pref_base == pref_base)
         {
@@ -11008,6 +11014,34 @@ static uintptr_t ios_subfloor_translate( uint64_t addr )
         if (addr >= ios_subfloor[i].pref_base &&
             addr <  ios_subfloor[i].pref_base + ios_subfloor[i].size)
             return (uintptr_t)(ios_subfloor[i].real_base + (addr - ios_subfloor[i].pref_base));
+    /* madeira-bcd [subfloor-trunc]: a pointer into the RELOCATED image cut to
+     * 32 bits. Windows keeps a sub-floor image below 4GB, so code built for it
+     * may address its own data with a 32-bit address size and still be right:
+     * voices38.dll (LEGO Batman: Legacy of the Dark Knight, base 0x3b400000)
+     * does `lea rsi,[rip+X]` then `mov edi,[esi]` (67 8b 3e). Mapped high at
+     * 0x71f96f0000 the lea yields 0x71f97249a0 and the 0x67 load reads
+     * 0xf97249a0 -- AV READ, the game dies with c0000005 (2026-10-07 15:03,
+     * build 96). Put the image's high bits back when that lands inside it.
+     * Only addresses below the floor get here, and they fault for everyone,
+     * so nothing that worked before can change. MADEIRA_SUBFLOOR_TRUNC=0 off. */
+    if (ios_subfloor_trunc)
+        for (i = 0; i < n; i++)
+        {
+            uint64_t rb = ios_subfloor[i].real_base, re = rb + ios_subfloor[i].size, hi;
+            for (hi = rb & ~0xffffffffull; hi <= ((re - 1) & ~0xffffffffull); hi += 0x100000000ull)
+            {
+                uint64_t cand = hi | addr;
+                if (cand >= rb && cand < re)
+                {
+                    if (ios_subfloor_trunc_hits++ < 8 || !(ios_subfloor_trunc_hits & 0xFFFF))
+                        dprintf( 2, "[subfloor-trunc] %llu: guest %#llx is window #%d's real image "
+                                 "%#llx cut to 32 bits -> %#llx\n", ios_subfloor_trunc_hits,
+                                 (unsigned long long)addr, i, (unsigned long long)rb,
+                                 (unsigned long long)cand );
+                    return (uintptr_t)cand;
+                }
+            }
+        }
     return 0;
 }
 
