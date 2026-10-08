@@ -5994,6 +5994,57 @@ skip_reclaim_band: ;
                                             dprintf(STDERR_FILENO, "[guest-fn] [%d] %llx-48: %s\n",
                                                 e, (unsigned long long)ret, hex);
                                         }
+                                        /* BEGIN guest-qi diagnostic. Match the entire observed
+                                         * QI setup, not arbitrary LEA bytes in an instruction.
+                                         * RDX = RIP-relative IID; RCX = [R13]; out = RSP+0x40.
+                                         * Only the innermost frame has these live registers.
+                                         * Kernel reads keep stale guest pointers from faulting
+                                         * the exception handler. Existing dump budget applies. */
+                                        if (e == 0 && sizeof(pre) == 48 &&
+                                            !memcmp(pre + 15, "\x4c\x8d\x44\x24\x40\x41\x89\x06\x48\x8d\x15", 11) &&
+                                            !memcmp(pre + 30, "\x49\x8b\x4d\x00\x48\xc7\x44\x24\x40\x00\x00\x00\x00\x48\x8b\x01\xff\x10", 18))
+                                        {
+                                            int32_t displacement;
+                                            uint64_t iid_addr, object = 0, vtable = 0, slots[4] = {0}, result = 0;
+                                            unsigned char iid[16] = {0};
+                                            uint32_t d1; uint16_t d2, d3;
+                                            int iid_ok, object_ok, vtable_ok = 0, slots_ok = 0, result_ok;
+                                            mach_vm_size_t bytes = 0;
+                                            memcpy(&displacement, pre + 26, 4);
+                                            iid_addr = ret - 18 + (int64_t)displacement;
+#define GUEST_QI_READ(address, value) \
+    (bytes = 0, mach_vm_read_overwrite(mach_task_self(), \
+        (mach_vm_address_t)(address), sizeof(value), (mach_vm_address_t)&(value), \
+        &bytes) == KERN_SUCCESS && bytes == sizeof(value))
+                                            iid_ok = GUEST_QI_READ(iid_addr, iid);
+                                            object_ok = GUEST_QI_READ(live_r13, object);
+                                            if (object_ok && object) vtable_ok = GUEST_QI_READ(object, vtable);
+                                            if (vtable_ok && vtable) slots_ok = GUEST_QI_READ(vtable, slots);
+                                            result_ok = GUEST_QI_READ(live_rsp + 0x40, result);
+#undef GUEST_QI_READ
+                                            dprintf(STDERR_FILENO,
+                                                "[guest-qi] v1 ret=%llx rax=%llx iid_addr=%llx iid_read=%d "
+                                                "owner_slot=%llx object=%llx object_read=%d vtable=%llx vtable_read=%d "
+                                                "out=%llx out_read=%d\n",
+                                                (unsigned long long)ret, (unsigned long long)live_rax,
+                                                (unsigned long long)iid_addr, iid_ok,
+                                                (unsigned long long)live_r13, (unsigned long long)object, object_ok,
+                                                (unsigned long long)vtable, vtable_ok,
+                                                (unsigned long long)result, result_ok);
+                                            if (iid_ok)
+                                            {
+                                                memcpy(&d1, iid, 4); memcpy(&d2, iid + 4, 2); memcpy(&d3, iid + 6, 2);
+                                                dprintf(STDERR_FILENO,
+                                                    "[guest-qi] iid={%08x-%04x-%04x-%02x%02x-%02x%02x%02x%02x%02x%02x}\n",
+                                                    (unsigned)d1, (unsigned)d2, (unsigned)d3,
+                                                    iid[8], iid[9], iid[10], iid[11], iid[12], iid[13], iid[14], iid[15]);
+                                            }
+                                            if (slots_ok)
+                                                dprintf(STDERR_FILENO, "[guest-qi] slots QI=%llx AddRef=%llx Release=%llx method3=%llx\n",
+                                                    (unsigned long long)slots[0], (unsigned long long)slots[1],
+                                                    (unsigned long long)slots[2], (unsigned long long)slots[3]);
+                                        }
+                                        /* END guest-qi diagnostic. */
                                         if (pre[sizeof(pre) - 5] == 0xe8)
                                         {
                                             int32_t rel;
