@@ -6,6 +6,7 @@
 #define MADEIRA_VIDEO_CAPS_H
 #include <d3d12video.h>
 #include <string.h>
+#include <stddef.h>
 
 struct mad_video_caps {
     ID3D12VideoDevice iface;
@@ -18,12 +19,16 @@ struct mad_video_profiles { UINT NodeIndex, ProfileCount; GUID *pProfiles; };
 struct mad_video_format_count { UINT NodeIndex; D3D12_VIDEO_DECODE_CONFIGURATION Configuration; UINT FormatCount; };
 struct mad_video_formats { UINT NodeIndex; D3D12_VIDEO_DECODE_CONFIGURATION Configuration; UINT FormatCount; DXGI_FORMAT *pOutputFormats; };
 
-#ifdef __MINGW32__
-_Static_assert(sizeof(struct mad_video_profile_count) == sizeof(D3D12_FEATURE_DATA_VIDEO_DECODE_PROFILE_COUNT), "video profile count ABI");
-_Static_assert(sizeof(struct mad_video_profiles) == sizeof(D3D12_FEATURE_DATA_VIDEO_DECODE_PROFILES), "video profiles ABI");
-_Static_assert(sizeof(struct mad_video_format_count) == sizeof(D3D12_FEATURE_DATA_VIDEO_DECODE_FORMAT_COUNT), "video format count ABI");
-_Static_assert(sizeof(struct mad_video_formats) == sizeof(D3D12_FEATURE_DATA_VIDEO_DECODE_FORMATS), "video formats ABI");
-#endif
+/* Check the wire layout directly: both Wine and the CI MinGW headers can
+ * omit the SDK typedefs above. These assertions run on the host too. */
+_Static_assert(sizeof(struct mad_video_profile_count) == 8, "video profile count ABI");
+_Static_assert(offsetof(struct mad_video_profiles, pProfiles) == 8 &&
+               sizeof(struct mad_video_profiles) == 8 + sizeof(void *), "video profiles ABI");
+_Static_assert(offsetof(struct mad_video_format_count, Configuration) == 4 &&
+               offsetof(struct mad_video_format_count, FormatCount) == 28 &&
+               sizeof(struct mad_video_format_count) == 32, "video format count ABI");
+_Static_assert(offsetof(struct mad_video_formats, pOutputFormats) == 32 &&
+               sizeof(struct mad_video_formats) == 32 + sizeof(void *), "video formats ABI");
 
 static struct mad_video_caps *mad_video_impl(ID3D12VideoDevice *iface) {
     return CONTAINING_RECORD(iface, struct mad_video_caps, iface);
