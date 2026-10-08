@@ -34,6 +34,7 @@
 #include "winemetal.h"
 
 #include "madeira_d3d12_stubs.h"
+#include "mad_video_caps.h"
 #include "madeira_ir_abi.h"
 
 /* madeira-bcd: MAD_PACK_ID names the CI run that built this DLL ("ipa 215" or
@@ -258,6 +259,7 @@ struct mad_device {
     obj_handle_t mtl_queue;
     obj_handle_t dsso;          /* depth: less-equal, writes enabled */
     LONG device_lost;
+    struct mad_video_caps video_caps;
     /* GPU addresses are resolved back to the resource that owns them rather
      * than dereferenced. The design is explicit that a D3D GPU address, a
      * descriptor handle and a backend object id are separate namespaces. */
@@ -7561,6 +7563,12 @@ static ID3D12FenceVtbl g_fence_vtbl;
 
 static HRESULT STDMETHODCALLTYPE device_QI(ID3D12Device *This, REFIID riid, void **out) {
     HRESULT hr;
+    if (out && riid && IsEqualGUID(riid, &IID_ID3D12VideoDevice)) {
+        struct mad_device *d = (struct mad_device *)This;
+        InterlockedIncrement(&d->refs);
+        *out = &d->video_caps.iface;
+        return S_OK;
+    }
     /* ml877: ID3D12Device1..8 are the same object with a longer vtable. UE 5.4
      * refuses to run without Device1 AND Device2 ("Missing full support for
      * Direct3D 12", D3D12Adapter.cpp:946) and uses Device2::CreatePipelineState,
@@ -14896,6 +14904,7 @@ __declspec(dllexport) HRESULT WINAPI MadeiraD3D12CreateDevice(IUnknown *adapter,
     struct mad_device *d = calloc(1, sizeof *d);
     if (!d) return E_OUTOFMEMORY;
     d->vtbl = &g_device_vtbl; d->refs = 1; d->iid = &IID_ID3D12Device; d->name = "Device";
+    mad_video_init(&d->video_caps, (IUnknown *)d);
     g_last_device = d;
     {   /* madeira-bcd: the adapter's LUID, for GetAdapterLuid. Engines match the
          * device to its DXGI adapter by it (Nixxes ports); a zero LUID matches
