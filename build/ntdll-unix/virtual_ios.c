@@ -22989,6 +22989,15 @@ static int ios_cage_8g_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG prot
     }
     if (!ios_cage_holdback_live || *size_ptr != 0x200000000ULL) return 0;
     if (ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "cage-8g" )) return 0;
+    /* The game is told 8 GB and treats every address in [0x7200000000,
+     * 0x7400000000) as its small-block area; the real view stops 64 KB short.
+     * Hold that last 64 KB so no other reservation can land there. */
+    {
+        void *tail = (void *)(uintptr_t)(IOS_CAGE_BASE + IOS_CAGE_REAL_SIZE);
+        SIZE_T tsz = 0x200000000ULL - IOS_CAGE_REAL_SIZE;
+        if (allocate_virtual_memory( &tail, &tsz, MEM_RESERVE, PAGE_NOACCESS, 0, 0, 0, 0 ))
+            dprintf( 2, "[cage-8g] could not hold the 64 KB cage tail\n" );
+    }
     *ret = pick;
     *size_ptr = sz;
     return 1;
