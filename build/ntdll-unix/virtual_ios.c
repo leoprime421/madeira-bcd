@@ -19606,6 +19606,27 @@ void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
             info->MmHighestPhysicalPage = max( 1, cached_limit / page_size );
         }
     }
+    /* madeira-bcd: env.MADEIRA_REPORT_PHYS_MB = N reports at most N MB of RAM.
+     * The Witcher 3 (witcher3.exe, 2026-10-07 19:55, build 97) reserved 8GB and
+     * then 32GB of address space with 8191 MB reported, the 32GB could not be
+     * placed (c0000017) and the game wrote through NULL. Engines that size their
+     * reservations from ullTotalPhys ask for less when told less. */
+    {
+        static long long phys_cap = -1;
+        if (phys_cap < 0)
+        {
+            const char *e = getenv( "MADEIRA_REPORT_PHYS_MB" );
+            phys_cap = e ? atoll( e ) : 0;
+        }
+        if (phys_cap >= 1024 &&
+            ((unsigned long long)phys_cap << 20) / page_size < (unsigned long long)info->MmHighestPhysicalPage)
+        {
+            static int said;
+            info->MmHighestPhysicalPage = ((unsigned long long)phys_cap << 20) / page_size;
+            if (!said++)
+                dprintf( 2, "[phys-cap] reporting %lld MB of RAM (MADEIRA_REPORT_PHYS_MB)\n", phys_cap );
+        }
+    }
 #elif defined(_SC_PHYS_PAGES)
     LONG64 phys_pages = sysconf( _SC_PHYS_PAGES );
 
