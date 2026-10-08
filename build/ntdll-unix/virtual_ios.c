@@ -22959,9 +22959,35 @@ static int ios_cage_8g_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG prot
         const char *e = getenv( "MADEIRA_CAGE_8G" );
         enabled = e && e[0] == '1';
     }
-    if (!enabled || !ios_cage_holdback_live || *ret || *size_ptr != 0x200000000ULL ||
-        !(type & MEM_RESERVE) || (type & MEM_COMMIT))
-        return 0;
+    if (!enabled || *ret || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return 0;
+    /* The 32 GB that follows goes to [0x7400000000, 0x7c00000000) exactly: the
+     * band is free once the 8 GB sits in the cage, ends at FEX's arena, and is
+     * 16 GB-aligned. Left to the default search it landed at 0x73ffff0000 --
+     * 64 KB-aligned and over the cage's soft tail -- and the game read a zero
+     * list header at that base (2026-10-07 20:48, build 99). */
+    if (*size_ptr == 0x800000000ULL)
+    {
+        NTSTATUS pst;
+
+        sz = *size_ptr;
+        pick = (void *)(uintptr_t)0x7400000000ULL;
+        pst = allocate_virtual_memory( &pick, &sz, type, protect, 0, 0, 0, 0 );
+        if (pst || (uintptr_t)pick != 0x7400000000ULL)
+        {
+            if (!pst)   /* granted, but somewhere else: give it back */
+            {
+                SIZE_T fsz = 0;
+                NtFreeVirtualMemory( NtCurrentProcess(), &pick, &fsz, MEM_RELEASE );
+            }
+            dprintf( 2, "[cage-8g] 32 GB at 0x7400000000 refused -- default placement\n" );
+            return 0;
+        }
+        dprintf( 2, "[cage-8g] 32 GB reserve placed at 0x7400000000 (16 GB-aligned)\n" );
+        *ret = pick;
+        *size_ptr = sz;
+        return 1;
+    }
+    if (!ios_cage_holdback_live || *size_ptr != 0x200000000ULL) return 0;
     if (ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "cage-8g" )) return 0;
     *ret = pick;
     *size_ptr = sz;
