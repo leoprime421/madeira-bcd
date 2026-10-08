@@ -1114,6 +1114,26 @@ static void *wine_process_thread(void *arg) {
             if (w3_launch) setenv("MADEIRA_CAGE_8G", "1", 1);
         }
 
+        /* madeira-bcd: Mortal Shell 2 (Unreal Engine 5) plays its videos with
+         * Electra, which decodes through the H.264 and AAC decoder MFTs. Those
+         * are winegstreamer's here (wg_transform_av_ios.c: VideoToolbox and
+         * AudioToolbox), and a 64-bit process gets winegstreamer's unix side
+         * only with MADEIRA_WG_64BIT=1. Without a decoder the picture stayed
+         * black after the shader compilation while the music played
+         * (2026-10-08 12:55, build 100: [dll-missing] msmpeg2vdec.dll).
+         * madeira.cfg and the game's file still win (env.MADEIRA_WG_64BIT = 0). */
+        {
+            static int ms2_set;
+            const int ms2_launch = fex_launch_exe && strstr(fex_launch_exe, "MortalShell2");
+            if (ms2_set && !ms2_launch) unsetenv("MADEIRA_WG_64BIT");
+            ms2_set = ms2_launch;
+            if (ms2_launch) {
+                setenv("MADEIRA_WG_64BIT", "1", 1);
+                dprintf(STDERR_FILENO, "[wg-h264] Mortal Shell 2 default: MADEIRA_WG_64BIT=1 (H.264/AAC decoders "
+                        "for Electra; madeira.cfg / the game's file still win)\n");
+            }
+        }
+
         /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */
         unsetenv("MADEIRA_FEX_NO_RCPC");
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");

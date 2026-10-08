@@ -59,11 +59,9 @@
  * wg_parser_apple_ios.c) for the Media Foundation source; MADEIRA_WG_VIDEO=0
  * restores the MP3/WAV-only parser.
  *
- * wg_transform_create also REFUSES anything that is not a WMA family stream.
- * winegstreamer's other transforms (aac, h264, wmv, the resampler, the colour
- * converter) are real GStreamer pipelines with no libavcodec replacement here,
- * and a transform that accepts an H.264 stream and then emits nothing is worse
- * for the caller than one that never opened.
+ * wg_transform_create also supports H.264/AAC on the platform backends.
+ * WMV, the resampler and the colour converter remain unsupported. H.264/AAC
+ * use wg_transform_av_ios.c with VideoToolbox/AudioToolbox on iOS.
  *
  * DECODING
  * --------
@@ -259,6 +257,7 @@
  * pull protocol).  It includes no Wine header, so it comes first; the Wine
  * side of the wg_parser entries is at the end of this file. */
 #include "wg_parser_av_ios.c"
+#include "wg_transform_av_ios.c"
 
 #include "ntstatus.h"
 #define WIN32_NO_STATUS
@@ -1788,9 +1787,223 @@ fail:
     return (NTSTATUS)err;
 }
 
+/* Media Foundation H.264/AAC transforms on the platform backends. */
+#define AV_TRANSFORM_MAGIC 0x57474156
+struct av_transform
+{
+    UINT32 magic;
+    struct mtv *video;
+    struct mta *audio;
+    BYTE *out_format;
+    UINT32 out_size;
+};
+C_ASSERT( MTX_FLAG_INCOMPLETE == WG_SAMPLE_FLAG_INCOMPLETE );
+C_ASSERT( MTX_FLAG_HAS_PTS == WG_SAMPLE_FLAG_HAS_PTS );
+C_ASSERT( MTX_FLAG_HAS_DURATION == WG_SAMPLE_FLAG_HAS_DURATION );
+C_ASSERT( MTX_FLAG_SYNC_POINT == WG_SAMPLE_FLAG_SYNC_POINT );
+C_ASSERT( MTX_FLAG_DISCONTINUITY == WG_SAMPLE_FLAG_DISCONTINUITY );
+C_ASSERT( MTX_FLAG_PRESERVE_TIMESTAMPS == WG_SAMPLE_FLAG_PRESERVE_TIMESTAMPS );
+
+static pthread_once_t av_backend_once = PTHREAD_ONCE_INIT;
+static void av_configure_backends(void)
+{
+#ifdef __APPLE__
+    mtx_configure( &mav_apple_video_backend, &mav_apple_audio_backend );
+#else
+    mtx_configure( NULL, NULL );
+#endif
+}
+static BOOL av_allowed( BOOL wow )
+{
+    const char *e = getenv( "MADEIRA_WG_H264_AAC" );
+    if (e && e[0] == '0') return FALSE;
+    if (e && e[0] == '1') return TRUE;
+    return !wow;
+}
+static struct av_transform *get_av_transform( wg_transform_t h )
+{
+    struct av_transform *t = (void *)(UINT_PTR)h;
+    return t && t->magic == AV_TRANSFORM_MAGIC ? t : NULL;
+}
+static NTSTATUS av_result( int r, HRESULT *hr )
+{
+    *hr = S_OK;
+    switch (r)
+    {
+    case MTX_OK: return STATUS_SUCCESS;
+    case MTX_NEED_MORE_INPUT: *hr = MF_E_TRANSFORM_NEED_MORE_INPUT; return STATUS_SUCCESS;
+    case MTX_NOT_ACCEPTING: *hr = MF_E_NOTACCEPTING; return STATUS_SUCCESS;
+    case MTX_STREAM_CHANGE: *hr = MF_E_TRANSFORM_STREAM_CHANGE; return STATUS_SUCCESS;
+    case MTX_BUFFER_TOO_SMALL: *hr = MF_E_BUFFERTOOSMALL; return STATUS_BUFFER_TOO_SMALL;
+    case MTX_INVALID: *hr = E_INVALIDARG; return STATUS_INVALID_PARAMETER;
+    case MTX_NO_MEMORY: *hr = E_OUTOFMEMORY; return STATUS_NO_MEMORY;
+    default: *hr = E_FAIL; return STATUS_NOT_SUPPORTED;
+    }
+}
+static const MFVIDEOFORMAT *av_video_format( const struct wg_media_type *type )
+{
+    static const GUID major = {0x73646976,0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+    if (!IsEqualGUID( &type->major, &major ) || !type->u.video || type->format_size < sizeof(MFVIDEOFORMAT)) return NULL;
+    return type->u.video;
+}
+static enum mtx_pix av_pixel( const GUID *g )
+{
+    static const GUID base = {0,0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+    GUID check = *g;
+    check.Data1 = 0;
+    if (!IsEqualGUID( &check, &base )) return MTX_PIX_NONE;
+    switch (g->Data1)
+    {
+    case 0x3231564e: return MTX_PIX_NV12;
+    case 0x30323449: case 0x56555949: return MTX_PIX_I420;
+    case 0x32315659: return MTX_PIX_YV12;
+    case 0x32595559: return MTX_PIX_YUY2;
+    default: return MTX_PIX_NONE;
+    }
+}
+static void av_picture_size( const MFVIDEOFORMAT *f, UINT32 *w, UINT32 *h )
+{
+    *w = f->videoInfo.MinimumDisplayAperture.Area.cx > 0 ? f->videoInfo.MinimumDisplayAperture.Area.cx : f->videoInfo.dwWidth;
+    *h = f->videoInfo.MinimumDisplayAperture.Area.cy > 0 ? f->videoInfo.MinimumDisplayAperture.Area.cy : f->videoInfo.dwHeight;
+}
+static NTSTATUS av_audio_output( struct av_transform *t, const struct wg_media_type *type )
+{
+    const WAVEFORMATEX *f = audio_format( type );
+    BYTE *copy;
+    UINT tag;
+    int r;
+    if (!f) return STATUS_NOT_SUPPORTED;
+    tag = format_tag( f, type->format_size );
+    if (!((tag == WAVE_FORMAT_PCM && f->wBitsPerSample == 16) || (tag == WAVE_FORMAT_IEEE_FLOAT && f->wBitsPerSample == 32))) return STATUS_NOT_SUPPORTED;
+    if (!(copy = malloc( type->format_size ))) return STATUS_NO_MEMORY;
+    memcpy( copy, f, type->format_size );
+    r = mta_set_output( t->audio, tag == WAVE_FORMAT_IEEE_FLOAT, f->nSamplesPerSec, f->nChannels, channel_mask( f, type->format_size ) );
+    if (r != MTX_OK) { free( copy ); return STATUS_NOT_SUPPORTED; }
+    free( t->out_format ); t->out_format = copy; t->out_size = type->format_size;
+    return STATUS_SUCCESS;
+}
+static NTSTATUS av_get_output( struct av_transform *t, struct wg_media_type *type )
+{
+    MFVIDEOFORMAT f = {0};
+    const void *data;
+    UINT32 size;
+    if (t->video)
+    {
+        struct mtv_output_info i;
+        mtv_get_output( t->video, &i );
+        if (t->out_format) memcpy( &f, t->out_format, sizeof(f) );
+        f.dwSize = sizeof(f);
+        f.videoInfo.dwWidth = i.frame_width; f.videoInfo.dwHeight = i.frame_height;
+        memset( &f.videoInfo.MinimumDisplayAperture, 0, sizeof(f.videoInfo.MinimumDisplayAperture) );
+        f.videoInfo.MinimumDisplayAperture.Area.cx = i.width;
+        f.videoInfo.MinimumDisplayAperture.Area.cy = i.height;
+        f.videoInfo.FramesPerSecond.Numerator = i.fps_n; f.videoInfo.FramesPerSecond.Denominator = i.fps_d;
+        f.videoInfo.PixelAspectRatio.Numerator = i.par_n; f.videoInfo.PixelAspectRatio.Denominator = i.par_d;
+        type->major = (GUID){0x73646976,0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+        data = &f; size = sizeof(f);
+    }
+    else { type->major = madeira_MFMediaType_Audio; data = t->out_format; size = t->out_size; }
+    if (!type->u.format || type->format_size < size) { type->format_size = size; return STATUS_BUFFER_TOO_SMALL; }
+    memcpy( type->u.format, data, size ); type->format_size = size;
+    return STATUS_SUCCESS;
+}
+static NTSTATUS av_set_output( struct av_transform *t, const struct wg_media_type *type )
+{
+    const MFVIDEOFORMAT *f;
+    UINT32 w, h;
+    BYTE *copy;
+    int r;
+    if (!t->video) return av_audio_output( t, type );
+    if (!(f = av_video_format( type ))) return STATUS_NOT_SUPPORTED;
+    if (!(copy = malloc( sizeof(*f) ))) return STATUS_NO_MEMORY;
+    memcpy( copy, f, sizeof(*f) );
+    av_picture_size( f, &w, &h );
+    r = mtv_set_output( t->video, av_pixel( &f->guidFormat ), w, h, f->videoInfo.dwWidth, f->videoInfo.dwHeight,
+                       f->videoInfo.MinimumDisplayAperture.Area.cx > 0 ? f->videoInfo.MinimumDisplayAperture.Area.cx : 0,
+                       f->videoInfo.MinimumDisplayAperture.Area.cy > 0 ? f->videoInfo.MinimumDisplayAperture.Area.cy : 0 );
+    if (r != MTX_OK) { free( copy ); return STATUS_NOT_SUPPORTED; }
+    free( t->out_format ); t->out_format = copy; t->out_size = sizeof(*f);
+    return STATUS_SUCCESS;
+}
+static NTSTATUS transform_create_any( struct wg_transform_create_params *p, BOOL wow )
+{
+    const MFVIDEOFORMAT *vi = av_video_format( &p->input_type ), *vo = av_video_format( &p->output_type );
+    const WAVEFORMATEX *ai = audio_format( &p->input_type ), *ao = audio_format( &p->output_type );
+    struct av_transform *t;
+    NTSTATUS st = STATUS_NOT_SUPPORTED;
+    int r = MTX_UNSUPPORTED;
+    static const GUID h264_sub = {0x34363248,0,0x10,{0x80,0,0,0xaa,0,0x38,0x9b,0x71}};
+    static const GUID h264_es = {0x3f40f4f0,0x5622,0x4ff8,{0xb6,0xd8,0xa1,0x7a,0x58,0x4b,0xee,0x5e}};
+    BOOL h264 = vi && (IsEqualGUID( &vi->guidFormat, &h264_sub ) || IsEqualGUID( &vi->guidFormat, &h264_es ));
+    BOOL aac = ai && (format_tag( ai, p->input_type.format_size ) == WAVE_FORMAT_MPEG_HEAAC || format_tag( ai, p->input_type.format_size ) == 0xff);
+    if (!h264 && !aac) return transform_create( p );
+    p->transform = 0;
+    if (!av_allowed( wow )) return STATUS_NOT_SUPPORTED;
+    pthread_once( &av_backend_once, av_configure_backends );
+    if (!(t = calloc( 1, sizeof(*t) ))) return STATUS_NO_MEMORY;
+    t->magic = AV_TRANSFORM_MAGIC;
+    if (h264 && vo)
+    {
+        struct mtv_config c = {0};
+        c.in_width = vi->videoInfo.dwWidth; c.in_height = vi->videoInfo.dwHeight;
+        c.fps_n = vi->videoInfo.FramesPerSecond.Numerator; c.fps_d = vi->videoInfo.FramesPerSecond.Denominator;
+        c.par_n = vi->videoInfo.PixelAspectRatio.Numerator; c.par_d = vi->videoInfo.PixelAspectRatio.Denominator;
+        c.header = (const BYTE *)(vi + 1); c.header_size = p->input_type.format_size - sizeof(*vi);
+        c.pix = av_pixel( &vo->guidFormat ); av_picture_size( vo, &c.out_width, &c.out_height );
+        c.dw_width = vo->videoInfo.dwWidth; c.dw_height = vo->videoInfo.dwHeight;
+        c.ap_width = vo->videoInfo.MinimumDisplayAperture.Area.cx > 0 ? vo->videoInfo.MinimumDisplayAperture.Area.cx : 0;
+        c.ap_height = vo->videoInfo.MinimumDisplayAperture.Area.cy > 0 ? vo->videoInfo.MinimumDisplayAperture.Area.cy : 0;
+        c.plane_align = p->attrs.output_plane_align; c.input_queue_length = p->attrs.input_queue_length;
+        c.allow_format_change = p->attrs.allow_format_change; c.preserve_timestamps = p->attrs.preserve_timestamps;
+        c.low_latency = p->attrs.low_latency;
+        r = mtv_create( &c, &t->video );
+    }
+    else if (aac && ao)
+    {
+        struct mta_config c = {0};
+        UINT tag = format_tag( ao, p->output_type.format_size );
+        UINT extra = p->input_type.format_size - sizeof(*ai);
+        if (ai->cbSize > extra) goto failed;
+        c.in_rate = ai->nSamplesPerSec; c.in_channels = ai->nChannels;
+        if (ai->wFormatTag == WAVE_FORMAT_MPEG_HEAAC)
+        {
+            const BYTE *e = (const BYTE *)(ai + 1);
+            UINT payload;
+            if (extra < 12 || ai->cbSize < 12) goto failed;
+            payload = e[0] | e[1] << 8;
+            if (payload > 1) goto failed;
+            c.adts = payload == 1; c.asc = e + 12; c.asc_size = ai->cbSize >= 12 ? ai->cbSize - 12 : 0;
+        }
+        else { c.asc = (const BYTE *)(ai + 1); c.asc_size = ai->cbSize; }
+        if (!((tag == WAVE_FORMAT_PCM && ao->wBitsPerSample == 16) || (tag == WAVE_FORMAT_IEEE_FLOAT && ao->wBitsPerSample == 32))) goto failed;
+        c.out_float = tag == WAVE_FORMAT_IEEE_FLOAT;
+        c.out_rate = ao->nSamplesPerSec; c.out_channels = ao->nChannels; c.out_mask = channel_mask( ao, p->output_type.format_size );
+        r = mta_create( &c, &t->audio );
+    }
+    if (r != MTX_OK) { HRESULT hr; st = av_result( r, &hr ); goto failed; }
+    if (!(t->out_format = malloc( p->output_type.format_size ))) { st = STATUS_NO_MEMORY; goto failed; }
+    memcpy( t->out_format, p->output_type.u.format, p->output_type.format_size ); t->out_size = p->output_type.format_size;
+    p->transform = (wg_transform_t)(UINT_PTR)t;
+    return STATUS_SUCCESS;
+failed:
+    if (t->video) mtv_destroy( t->video );
+    if (t->audio) mta_destroy( t->audio );
+    free( t->out_format ); free( t );
+    return st;
+}
+
 static NTSTATUS transform_destroy( wg_transform_t handle )
 {
-    struct wma_transform *transform = get_transform( handle );
+    struct av_transform *av = get_av_transform( handle );
+    struct wma_transform *transform;
+    if (av)
+    {
+        if (av->video) mtv_destroy( av->video );
+        if (av->audio) mta_destroy( av->audio );
+        av->magic = 0; free( av->out_format ); free( av );
+        return STATUS_SUCCESS;
+    }
+    transform = get_transform( handle );
 
     if (!transform) return STATUS_INVALID_HANDLE;
 
@@ -1827,6 +2040,15 @@ static NTSTATUS transform_destroy( wg_transform_t handle )
 static NTSTATUS transform_push_data( wg_transform_t handle, struct wg_sample *sample,
                                      const void *data, HRESULT *result )
 {
+    struct av_transform *av = get_av_transform( handle );
+    if (av)
+    {
+        struct mtx_in in;
+        if (!sample || !result) return STATUS_INVALID_PARAMETER;
+        in = (struct mtx_in){data, sample->size, sample->flags, sample->pts, sample->duration};
+        return av_result( av->video ? mtv_push( av->video, &in ) : mta_push( av->audio, &in ), result );
+    }
+
     struct wma_transform *transform = get_transform( handle );
     NTSTATUS status;
 
@@ -1898,6 +2120,18 @@ static NTSTATUS transform_push_data( wg_transform_t handle, struct wg_sample *sa
 static NTSTATUS transform_read_data( wg_transform_t handle, struct wg_sample *sample,
                                      void *data, HRESULT *result )
 {
+    struct av_transform *av = get_av_transform( handle );
+    if (av)
+    {
+        struct mtx_out out = {0};
+        NTSTATUS st;
+        if (!sample || !result) return STATUS_INVALID_PARAMETER;
+        out.data = data; out.max_size = sample->max_size; out.stride = sample->stride;
+        st = av_result( av->video ? mtv_read( av->video, &out ) : mta_read( av->audio, &out ), result );
+        sample->size = out.size; sample->flags = out.flags; sample->pts = out.pts; sample->duration = out.duration;
+        return st;
+    }
+
     struct wma_transform *transform = get_transform( handle );
     size_t avail, copy, frames;
 
@@ -1964,6 +2198,9 @@ static NTSTATUS transform_read_data( wg_transform_t handle, struct wg_sample *sa
  */
 static NTSTATUS transform_get_output_type( wg_transform_t handle, struct wg_media_type *type )
 {
+    struct av_transform *av = get_av_transform( handle );
+    if (av) return av_get_output( av, type );
+
     struct wma_transform *transform = get_transform( handle );
     UINT32 size;
 
@@ -1989,6 +2226,9 @@ static NTSTATUS transform_get_output_type( wg_transform_t handle, struct wg_medi
 
 static NTSTATUS transform_set_output_type( wg_transform_t handle, const struct wg_media_type *type )
 {
+    struct av_transform *av = get_av_transform( handle );
+    if (av) return av_set_output( av, type );
+
     struct wma_transform *transform = get_transform( handle );
     const WAVEFORMATEX *out = audio_format( type );
     enum AVSampleFormat sample_fmt;
@@ -2055,7 +2295,7 @@ static NTSTATUS wma_not_implemented( void *args )
 
 static NTSTATUS wma_transform_create( void *args )
 {
-    return transform_create( args );
+    return transform_create_any( args, FALSE );
 }
 
 static NTSTATUS wma_transform_destroy( void *args )
@@ -2097,6 +2337,14 @@ static NTSTATUS wma_transform_read_data( void *args )
 
 static NTSTATUS wma_transform_get_status( void *args )
 {
+    struct wg_transform_get_status_params *av_params = args;
+    struct av_transform *av = get_av_transform( av_params->transform );
+    if (av)
+    {
+        av_params->accepts_input = av->video ? mtv_accepts_input( av->video ) : mta_accepts_input( av->audio );
+        return STATUS_SUCCESS;
+    }
+
     struct wg_transform_get_status_params *params = args;
     struct wma_transform *transform = get_transform( params->transform );
 
@@ -2109,6 +2357,13 @@ static NTSTATUS wma_transform_get_status( void *args )
 
 static NTSTATUS wma_transform_drain( void *args )
 {
+    struct av_transform *av = get_av_transform( *(wg_transform_t *)args );
+    if (av)
+    {
+        HRESULT hr;
+        return av_result( av->video ? mtv_drain( av->video ) : mta_drain( av->audio ), &hr );
+    }
+
     struct wma_transform *transform = get_transform( *(wg_transform_t *)args );
     NTSTATUS status;
 
@@ -2139,6 +2394,13 @@ static NTSTATUS wma_transform_drain( void *args )
 
 static NTSTATUS wma_transform_flush( void *args )
 {
+    struct av_transform *av = get_av_transform( *(wg_transform_t *)args );
+    if (av)
+    {
+        HRESULT hr;
+        return av_result( av->video ? mtv_flush( av->video ) : mta_flush( av->audio ), &hr );
+    }
+
     struct wma_transform *transform = get_transform( *(wg_transform_t *)args );
 
     if (!transform) return STATUS_INVALID_HANDLE;
@@ -2861,7 +3123,7 @@ static NTSTATUS wow64_wma_transform_create( void *args )
     media_type_from32( &params.output_type, &params32->output_type );
     params.attrs = params32->attrs;
 
-    status = transform_create( &params );
+    status = transform_create_any( &params, TRUE );
     params32->transform = params.transform;
     return status;
 }

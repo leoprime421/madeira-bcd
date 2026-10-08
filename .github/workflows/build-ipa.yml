@@ -1227,6 +1227,9 @@ jobs:
         continue-on-error: true
         run: bash tools/build-wine-extra-dlls.sh "$GITHUB_WORKSPACE/wine/build-native"
 
+      - name: Build ARM64EC H.264 and AAC decoder DLLs
+        run: bash build/wine-pe/build-media.sh "$GITHUB_WORKSPACE/wine/build-native"
+
       # The app ships a prebuilt arm64ec ntdll.dll. Rebuild it with both the
       # Steam/Social Club trace and the executable-protect callback fix so the
       # FEX notification path does not depend on a version-sensitive binary patch.
@@ -1343,7 +1346,7 @@ jobs:
           for d in d3d11.dll dxgi.dll winemetal.dll d3d10core.dll; do
             [ -f "app/Madeira/aarch64-windows/$d" ] || MISSING="$MISSING aarch64/$d"
           done
-          for d in d3d11.dll dxgi.dll winemetal.dll d3d12.dll madeira_d3d12.dll xtajit64.dll ntdll.dll cryptsp.dll gamingtcui.dll; do
+          for d in d3d11.dll dxgi.dll winemetal.dll d3d12.dll madeira_d3d12.dll xtajit64.dll ntdll.dll cryptsp.dll gamingtcui.dll winegstreamer.dll msmpeg2vdec.dll msauddecmft.dll; do
             [ -f "app/Madeira/arm64ec-windows/$d" ] || MISSING="$MISSING arm64ec/$d"
           done
           if [ -n "$MISSING" ]; then
