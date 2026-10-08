@@ -1101,16 +1101,17 @@ static void *wine_process_thread(void *arg) {
             }
         }
 
-        /* madeira-bcd: The Witcher 3 reserves address space in proportion to the
-         * RAM it is told about (8GB + 32GB with 8191 MB reported; the 32GB cannot
-         * be placed and the game dies, 2026-10-07 19:55). Report 4GB unless
-         * madeira.cfg / the game's file says otherwise (env.MADEIRA_REPORT_PHYS_MB). */
+        /* madeira-bcd: The Witcher 3 reserves 8GB and then 32GB of address space
+         * (the same with 8191 or 4096 MB of RAM reported). The 8GB has to take the
+         * boot cage holdback (MADEIRA_CAGE_8G, virtual_ios.c) or the 32GB has no
+         * room and the game dies (2026-10-07 19:55 / 20:23). madeira.cfg and the
+         * game's file still win (env.MADEIRA_CAGE_8G = 0). */
         {
             static int w3_set;
             const int w3_launch = fex_launch_exe && strstr(fex_launch_exe, "witcher3.exe");
-            if (w3_set && !w3_launch) unsetenv("MADEIRA_REPORT_PHYS_MB");
+            if (w3_set && !w3_launch) unsetenv("MADEIRA_CAGE_8G");
             w3_set = w3_launch;
-            if (w3_launch) setenv("MADEIRA_REPORT_PHYS_MB", "4096", 1);
+            if (w3_launch) setenv("MADEIRA_CAGE_8G", "1", 1);
         }
 
         /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */

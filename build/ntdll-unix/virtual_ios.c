@@ -22943,6 +22943,31 @@ static NTSTATUS ios_cage_grant( ULONG type, ULONG protect, SIZE_T asked, void **
     return st;
 }
 
+/* madeira-bcd [cage-8g]: with MADEIRA_CAGE_8G=1, an unhinted 8 GB reserve-only ask
+ * takes the boot cage holdback at IOS_CAGE_BASE, so the [0x7400000000,
+ * 0x7c00000000) band stays free. The Witcher 3 (witcher3.exe) reserves 8 GB and
+ * then 32 GB: the 8 GB landed at 0x73ffff0000, splitting that band, the 32 GB
+ * failed (c0000017) and the game wrote through NULL (2026-10-07 20:23, build 98). */
+static int ios_cage_8g_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect )
+{
+    static int enabled = -1;
+    void *pick = NULL;
+    SIZE_T sz = 0;
+
+    if (enabled < 0)
+    {
+        const char *e = getenv( "MADEIRA_CAGE_8G" );
+        enabled = e && e[0] == '1';
+    }
+    if (!enabled || !ios_cage_holdback_live || *ret || *size_ptr != 0x200000000ULL ||
+        !(type & MEM_RESERVE) || (type & MEM_COMMIT))
+        return 0;
+    if (ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "cage-8g" )) return 0;
+    *ret = pick;
+    *size_ptr = sz;
+    return 1;
+}
+
 /* Layout 2: is this SocialClubHelper.exe NtAllocateVirtualMemoryEx call V8's
  * 8 GB sandbox step? (wall 3 of the agent-sc-next-walls report.) V8 allocates
  * through VirtualAlloc2 whenever kernelbase exports it (platform-win32.cc
@@ -23273,6 +23298,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
+        if (is_jumbo && ios_cage_8g_try( ret, size_ptr, type, protect ))
+        {
+            ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
+            return STATUS_SUCCESS;
+        }
         /* ml125 [bigres]: settle the furniture attribution WITHOUT an FEX build.
          * The [window] probe found ~30 runs of ~511MB and I inferred FEXCore's
          * per-thread LookupCache (TotalCacheSize = VirtualMemSize/4096*8 +
@@ -25117,6 +25147,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
+        if (is_jumbo && ios_cage_8g_try( ret, size_ptr, type, protect ))
+        {
+            ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
+            return STATUS_SUCCESS;
+        }
         /* ml125 [bigres]: settle the furniture attribution WITHOUT an FEX build.
          * The [window] probe found ~30 runs of ~511MB and I inferred FEXCore's
          * per-thread LookupCache (TotalCacheSize = VirtualMemSize/4096*8 +
