@@ -35,6 +35,7 @@
 
 #include "madeira_d3d12_stubs.h"
 #include "mad_video_caps.h"
+#include "mad_destruction_notifier.h"
 #include "madeira_ir_abi.h"
 
 /* madeira-bcd: MAD_PACK_ID names the CI run that built this DLL ("ipa 215" or
@@ -1020,6 +1021,15 @@ static HRESULT mad_creation_failure(struct mad_device *d, const char *what) {
 static HRESULT mad_qi(struct mad_obj *o, REFIID riid, void **out, int is_device_child) {
     if (!out) return E_POINTER;
     *out = NULL;
+    if (!riid) return E_INVALIDARG;
+    if (IsEqualGUID(riid, &IID_ID3DDestructionNotifier)) {
+        static LONG notified;
+        HRESULT hr = mad_notifier_get((IUnknown *)o, out);
+        if (InterlockedIncrement(&notified) <= 8)
+            d3d12_log("[destruction-notifier] %s object=%p hr=%08lx notifier=%p\n",
+                      o->name ? o->name : "?", o, (unsigned long)hr, *out);
+        return hr;
+    }
     if (IsEqualGUID(riid, &IID_IUnknown) || IsEqualGUID(riid, o->iid) ||
         IsEqualGUID(riid, &IID_ID3D12Object) ||
         (is_device_child && IsEqualGUID(riid, &IID_ID3D12DeviceChild))) {
@@ -1108,6 +1118,9 @@ static HRESULT mad_pd_set(const void *obj, REFGUID g, UINT n, const void *d) { r
 static HRESULT mad_pd_set_iface(const void *obj, REFGUID g, const IUnknown *i) { return mad_pd_store(obj, g, 0, NULL, (IUnknown *)i); }
 static void mad_pd_purge(const void *obj) {
     struct mad_pd *old;
+    /* All D3D12 final releases reach this point before freeing dependencies.
+     * Notifications must run even when no private data was ever attached. */
+    mad_notifier_destroy(obj);
     if (!g_pd_count) return;
     AcquireSRWLockExclusive(&g_pd_lock);
     old = mad_pd_unlink_locked(obj, NULL);
