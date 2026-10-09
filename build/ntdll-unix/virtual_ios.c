@@ -22973,6 +22973,36 @@ static int ios_jumbo_fit_place( void **ret, SIZE_T *size_ptr, ULONG type, ULONG 
     return 1;
 }
 
+/* With MADEIRA_JUMBO_SHRINK=1, an unhinted reserve-only ask of up to 8 GB that
+ * found no room anywhere else takes the boot cage holdback instead of
+ * failing. Cyberpunk 2077's next 4 GB failed after its 16/32 GB pools and the
+ * game stopped with an unhandled exception (2026-10-09 12:03). The holdback is
+ * what a 32-bit child process starts in, so only titles that opt in give it up. */
+static NTSTATUS ios_jumbo_cage_fallback( void *hint, void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect, NTSTATUS st )
+{
+    const char *k;
+    void *pick;
+    SIZE_T sz;
+
+    if (st != STATUS_NO_MEMORY || hint || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return st;
+    if (!ios_cage_holdback_live || !*size_ptr || *size_ptr > IOS_CAGE_REAL_SIZE) return st;
+    if (!(k = getenv( "MADEIRA_JUMBO_SHRINK" )) || k[0] != '1') return st;
+    munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
+    ios_cage_holdback_live = 0;
+    pick = (void *)(uintptr_t)IOS_CAGE_BASE;
+    sz = *size_ptr;
+    if (allocate_virtual_memory( &pick, &sz, type, protect, 0, 0, 0, 0 ) || (uintptr_t)pick != IOS_CAGE_BASE)
+    {
+        dprintf( 2, "[jumbo-fit] cage fallback for 0x%lx failed\n", (unsigned long)*size_ptr );
+        return st;
+    }
+    dprintf( 2, "[jumbo-fit] 0x%lx reserve placed in the cage holdback at %p (MADEIRA_JUMBO_SHRINK)\n",
+             (unsigned long)*size_ptr, pick );
+    *ret = pick;
+    *size_ptr = sz;
+    return STATUS_SUCCESS;
+}
+
 static int ios_jumbo_fit_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
     static int fit = -1, shrink = -1;
@@ -24134,6 +24164,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
             }
         }
 
+        if (is_jumbo) st = ios_jumbo_cage_fallback( jumbo_hint, ret, size_ptr, type, protect, st );
         if (is_jumbo) ios_jumbo_census( jumbo_hint, jumbo_size, st ? NULL : *ret, (unsigned)st );
         /* madeira-bcd: remember a helper's large reservation for ios_sc_reap_dead */
         if (is_jumbo && !st && ios_sc_cef_enabled() && ios_sc_current_is_helper()) ios_sc_grant_note( *ret, *size_ptr );
@@ -25443,6 +25474,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             if (sc2 && !st) ios_sc_grant_note( *ret, *size_ptr );
         }
 
+        if (is_jumbo) st = ios_jumbo_cage_fallback( jumbo_hint, ret, size_ptr, type, protect, st );
         if (is_jumbo) ios_jumbo_census( jumbo_hint, jumbo_size, st ? NULL : *ret, (unsigned)st );
         if (!st && *size_ptr >= 0x10000000 && *size_ptr < 0x40000000 && (type & MEM_RESERVE))
             ios_bigres_note( *ret, *size_ptr );
