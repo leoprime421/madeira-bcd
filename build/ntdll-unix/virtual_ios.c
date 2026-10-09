@@ -22984,16 +22984,32 @@ static NTSTATUS ios_jumbo_cage_fallback( void *hint, void **ret, SIZE_T *size_pt
     void *pick;
     SIZE_T sz;
 
+    uintptr_t at;
+
     if (st != STATUS_NO_MEMORY || hint || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return st;
-    if (!ios_cage_holdback_live || !*size_ptr || *size_ptr > IOS_CAGE_REAL_SIZE) return st;
+    if (!*size_ptr || *size_ptr > IOS_CAGE_REAL_SIZE) return st;
     if (!(k = getenv( "MADEIRA_JUMBO_SHRINK" )) || k[0] != '1') return st;
-    munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
-    ios_cage_holdback_live = 0;
-    pick = (void *)(uintptr_t)IOS_CAGE_BASE;
-    sz = *size_ptr;
-    if (allocate_virtual_memory( &pick, &sz, type, protect, 0, 0, 0, 0 ) || (uintptr_t)pick != IOS_CAGE_BASE)
+    if (ios_cage_holdback_live)
     {
-        dprintf( 2, "[jumbo-fit] cage fallback for 0x%lx failed\n", (unsigned long)*size_ptr );
+        munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
+        ios_cage_holdback_live = 0;
+    }
+    /* The cage may already hold an earlier fallback (Cyberpunk asks for 4 GB
+     * twice, 2026-10-09 12:37): try each size-aligned spot inside it. */
+    for (at = IOS_CAGE_BASE; at + *size_ptr <= IOS_CAGE_BASE + IOS_CAGE_REAL_SIZE; at += 0x40000000ULL)
+    {
+        pick = (void *)at;
+        sz = *size_ptr;
+        if (allocate_virtual_memory( &pick, &sz, type, protect, 0, 0, 0, 0 )) continue;
+        if ((uintptr_t)pick == at) break;
+        {
+            SIZE_T fsz = 0;
+            NtFreeVirtualMemory( NtCurrentProcess(), &pick, &fsz, MEM_RELEASE );
+        }
+    }
+    if (at + *size_ptr > IOS_CAGE_BASE + IOS_CAGE_REAL_SIZE)
+    {
+        dprintf( 2, "[jumbo-fit] cage fallback for 0x%lx failed: the cage is full\n", (unsigned long)*size_ptr );
         return st;
     }
     dprintf( 2, "[jumbo-fit] 0x%lx reserve placed in the cage holdback at %p (MADEIRA_JUMBO_SHRINK)\n",
