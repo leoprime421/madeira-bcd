@@ -22996,7 +22996,7 @@ static NTSTATUS ios_jumbo_cage_fallback( void *hint, void **ret, SIZE_T *size_pt
     /* The bands left to give: the boot cage holdback, and the half of the
      * last slot that a shrunk 32 GB leaves free. Cyberpunk 2077's pool grows
      * by 4 GB reserves again and again (2026-10-09 12:37, 13:30, 13:58). */
-    static const uintptr_t bands[2][2] = { { IOS_CAGE_BASE, IOS_CAGE_BASE + 0x200000000ULL },
+    const uintptr_t bands[2][2] = { { IOS_CAGE_BASE, IOS_CAGE_BASE + 0x200000000ULL },
                                            { 0x7a00000000ULL, 0x7c00000000ULL } };
     const char *k;
     void *pick = NULL;
