@@ -22978,13 +22978,31 @@ static int ios_jumbo_fit_place( void **ret, SIZE_T *size_ptr, ULONG type, ULONG 
  * failing. Cyberpunk 2077's next 4 GB failed after its 16/32 GB pools and the
  * game stopped with an unhandled exception (2026-10-09 12:03). The holdback is
  * what a 32-bit child process starts in, so only titles that opt in give it up. */
+/* Fixed placement at `at`; frees and fails if Wine put it elsewhere. */
+static int ios_jumbo_try_at( uintptr_t at, SIZE_T want, ULONG type, ULONG protect, void **pick )
+{
+    SIZE_T sz = want;
+
+    *pick = (void *)at;
+    if (allocate_virtual_memory( pick, &sz, type, protect, 0, 0, 0, 0 )) return 0;
+    if ((uintptr_t)*pick == at) return 1;
+    sz = 0;
+    NtFreeVirtualMemory( NtCurrentProcess(), pick, &sz, MEM_RELEASE );
+    return 0;
+}
+
 static NTSTATUS ios_jumbo_cage_fallback( void *hint, void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect, NTSTATUS st )
 {
+    /* The bands left to give: the boot cage holdback, and the half of the
+     * last slot that a shrunk 32 GB leaves free. Cyberpunk 2077's pool grows
+     * by 4 GB reserves again and again (2026-10-09 12:37, 13:30, 13:58). */
+    static const uintptr_t bands[2][2] = { { IOS_CAGE_BASE, IOS_CAGE_BASE + 0x200000000ULL },
+                                           { 0x7a00000000ULL, 0x7c00000000ULL } };
     const char *k;
-    void *pick;
-    SIZE_T sz;
-
+    void *pick = NULL;
+    SIZE_T back;
     uintptr_t at;
+    int b, pass;
 
     if (st != STATUS_NO_MEMORY || hint || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return st;
     if (!*size_ptr || *size_ptr > 0x200000000ULL) return st;
@@ -22994,31 +23012,23 @@ static NTSTATUS ios_jumbo_cage_fallback( void *hint, void **ret, SIZE_T *size_pt
         munmap( (void *)(uintptr_t)IOS_CAGE_BASE, IOS_CAGE_REAL_SIZE );
         ios_cage_holdback_live = 0;
     }
-    /* The cage may already hold an earlier fallback (Cyberpunk asks for 4 GB
-     * twice, 2026-10-09 12:37): try each size-aligned spot inside it. */
-    /* The whole 8 GB band up to 0x7400000000, not just the holdback's real
-     * size: a second 4 GB ends exactly there (2026-10-09 13:30). */
-    for (at = IOS_CAGE_BASE; at + *size_ptr <= IOS_CAGE_BASE + 0x200000000ULL; at += 0x40000000ULL)
+    /* pass 0: the full size; pass 1: 1 GB of backing, the caller still told
+     * the full size (it commits a little at a time, ~1 GB in all so far) */
+    for (pass = 0; pass < 2; pass++)
     {
-        pick = (void *)at;
-        sz = *size_ptr;
-        if (allocate_virtual_memory( &pick, &sz, type, protect, 0, 0, 0, 0 )) continue;
-        if ((uintptr_t)pick == at) break;
-        {
-            SIZE_T fsz = 0;
-            NtFreeVirtualMemory( NtCurrentProcess(), &pick, &fsz, MEM_RELEASE );
-        }
+        back = pass ? (*size_ptr < 0x40000000ULL ? *size_ptr : 0x40000000ULL) : *size_ptr;
+        for (b = 0; b < 2; b++)
+            for (at = bands[b][0]; at + back <= bands[b][1]; at += 0x40000000ULL)
+                if (ios_jumbo_try_at( at, back, type, protect, &pick ))
+                {
+                    dprintf( 2, "[jumbo-fit] 0x%lx reserve placed at %p backed by 0x%lx (MADEIRA_JUMBO_SHRINK)\n",
+                             (unsigned long)*size_ptr, pick, (unsigned long)back );
+                    *ret = pick;   /* *size_ptr stays what was asked */
+                    return STATUS_SUCCESS;
+                }
     }
-    if (at + *size_ptr > IOS_CAGE_BASE + 0x200000000ULL)
-    {
-        dprintf( 2, "[jumbo-fit] cage fallback for 0x%lx failed: the cage is full\n", (unsigned long)*size_ptr );
-        return st;
-    }
-    dprintf( 2, "[jumbo-fit] 0x%lx reserve placed in the cage holdback at %p (MADEIRA_JUMBO_SHRINK)\n",
-             (unsigned long)*size_ptr, pick );
-    *ret = pick;
-    *size_ptr = sz;
-    return STATUS_SUCCESS;
+    dprintf( 2, "[jumbo-fit] cage fallback for 0x%lx failed: the cage is full\n", (unsigned long)*size_ptr );
+    return st;
 }
 
 static int ios_jumbo_fit_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect )
@@ -23051,14 +23061,19 @@ static int ios_jumbo_fit_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG pr
         return 1;
     }
     if (!shrink) return 0;
-    for (a = 0x7800000000ULL; a >= 0x7400000000ULL; a -= slot)
-        if (ios_jumbo_fit_place( ret, size_ptr, type, protect, a, slot ))
-        {
-            /* *size_ptr stays 32 GB: the caller is told what it asked for */
-            dprintf( 2, "[jumbo-fit] SHRINK: 32 GB reserve backed by 16 GB at %#lx (MADEIRA_JUMBO_SHRINK)\n",
-                     (unsigned long)a );
-            return 1;
-        }
+    {
+        void *pick;
+        /* 8 GB of backing, so [0x7a00000000, 0x7c00000000) stays for the
+         * pool's later 4 GB reserves (ios_jumbo_cage_fallback) */
+        for (a = 0x7800000000ULL; a >= 0x7400000000ULL; a -= slot)
+            if (ios_jumbo_try_at( a, slot / 2, type, protect, &pick ))
+            {
+                *ret = pick;
+                dprintf( 2, "[jumbo-fit] SHRINK: 32 GB reserve backed by 8 GB at %#lx (MADEIRA_JUMBO_SHRINK)\n",
+                         (unsigned long)a );
+                return 1;
+            }
+    }
     return 0;
 }
 
