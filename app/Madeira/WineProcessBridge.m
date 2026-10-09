@@ -1114,6 +1114,19 @@ static void *wine_process_thread(void *arg) {
             if (w3_launch) setenv("MADEIRA_CAGE_8G", "1", 1);
         }
 
+        /* madeira-bcd: Cyberpunk 2077 reserves 16 GB, 64 GB and 32 GB of address
+         * space; the device has room for about 39 GB, so the 32 GB failed and the
+         * game wrote through NULL (2026-10-09 11:20). MADEIRA_JUMBO_SHRINK backs
+         * that 32 GB with one 16 GB slot (virtual_ios.c [jumbo-fit]).
+         * env.MADEIRA_JUMBO_SHRINK = 0 in madeira.cfg / the game's file wins. */
+        {
+            static int cp_set;
+            const int cp_launch = fex_launch_exe && strstr(fex_launch_exe, "Cyberpunk2077");
+            if (cp_set && !cp_launch) unsetenv("MADEIRA_JUMBO_SHRINK");
+            cp_set = cp_launch;
+            if (cp_launch) setenv("MADEIRA_JUMBO_SHRINK", "1", 1);
+        }
+
         /* madeira-bcd: Mortal Shell 2 (Unreal Engine 5) plays its videos with
          * Electra, which decodes through the H.264 and AAC decoder MFTs. Those
          * are winegstreamer's here (wg_transform_av_ios.c: VideoToolbox and

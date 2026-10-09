@@ -22943,6 +22943,77 @@ static NTSTATUS ios_cage_grant( ULONG type, ULONG protect, SIZE_T asked, void **
     return st;
 }
 
+/* madeira-bcd [jumbo-fit]: an unhinted reserve-only ask of exactly 16 or 32 GB
+ * is placed on 16 GB slot boundaries of the guest window instead of the
+ * default search, which put Cyberpunk 2077's 16 GB at 0x73ffff0000 (straddling
+ * two slots) so its later 32 GB had no room and it wrote through NULL
+ * (2026-10-09 11:20). Slots [0x7400000000, 0x7c00000000) below FEX's arena are
+ * tried, lowest first for 16 GB, the whole band for 32 GB. MADEIRA_JUMBO_FIT=0
+ * turns it off.
+ *
+ * MADEIRA_JUMBO_SHRINK=1 (Cyberpunk's default, experimental): when a 32 GB ask
+ * cannot get two clear slots, it is given ONE clear 16 GB slot and told 32 GB.
+ * The device has no more address space to give (the GPU carveout owns the
+ * rest); a pool that really commits past 16 GB would land in a neighbour, so
+ * this is only for titles that reserve far more than they ever use. */
+static int ios_jumbo_fit_place( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect, uintptr_t at, SIZE_T sz )
+{
+    void *pick = (void *)at;
+    SIZE_T got = sz;
+    NTSTATUS st = allocate_virtual_memory( &pick, &got, type, protect, 0, 0, 0, 0 );
+
+    if (st) return 0;
+    if ((uintptr_t)pick != at)
+    {
+        SIZE_T fsz = 0;
+        NtFreeVirtualMemory( NtCurrentProcess(), &pick, &fsz, MEM_RELEASE );
+        return 0;
+    }
+    *ret = pick;
+    return 1;
+}
+
+static int ios_jumbo_fit_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect )
+{
+    static int fit = -1, shrink = -1;
+    const SIZE_T slot = 0x400000000ULL;
+    uintptr_t a;
+
+    if (fit < 0)
+    {
+        const char *e = getenv( "MADEIRA_JUMBO_FIT" ), *k = getenv( "MADEIRA_JUMBO_SHRINK" );
+        fit = !(e && e[0] == '0');
+        shrink = k && k[0] == '1';
+    }
+    if (!fit || *ret || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return 0;
+    if (*size_ptr == slot)
+    {
+        for (a = 0x7400000000ULL; a < 0x7c00000000ULL; a += slot)
+            if (ios_jumbo_fit_place( ret, size_ptr, type, protect, a, slot ))
+            {
+                dprintf( 2, "[jumbo-fit] 16 GB reserve placed at %#lx (slot-aligned)\n", (unsigned long)a );
+                return 1;
+            }
+        return 0;
+    }
+    if (*size_ptr != 2 * slot) return 0;
+    if (ios_jumbo_fit_place( ret, size_ptr, type, protect, 0x7400000000ULL, 2 * slot ))
+    {
+        dprintf( 2, "[jumbo-fit] 32 GB reserve placed at 0x7400000000\n" );
+        return 1;
+    }
+    if (!shrink) return 0;
+    for (a = 0x7800000000ULL; a >= 0x7400000000ULL; a -= slot)
+        if (ios_jumbo_fit_place( ret, size_ptr, type, protect, a, slot ))
+        {
+            /* *size_ptr stays 32 GB: the caller is told what it asked for */
+            dprintf( 2, "[jumbo-fit] SHRINK: 32 GB reserve backed by 16 GB at %#lx (MADEIRA_JUMBO_SHRINK)\n",
+                     (unsigned long)a );
+            return 1;
+        }
+    return 0;
+}
+
 /* madeira-bcd [cage-8g]: with MADEIRA_CAGE_8G=1, an unhinted 8 GB reserve-only ask
  * takes the boot cage holdback at IOS_CAGE_BASE, so the [0x7400000000,
  * 0x7c00000000) band stays free. The Witcher 3 (witcher3.exe) reserves 8 GB and
@@ -23333,7 +23404,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
-        if (is_jumbo && ios_cage_8g_try( ret, size_ptr, type, protect ))
+        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_jumbo_fit_try( ret, size_ptr, type, protect )))
         {
             ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
             return STATUS_SUCCESS;
@@ -25182,7 +25253,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
-        if (is_jumbo && ios_cage_8g_try( ret, size_ptr, type, protect ))
+        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_jumbo_fit_try( ret, size_ptr, type, protect )))
         {
             ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
             return STATUS_SUCCESS;
