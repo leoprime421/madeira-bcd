@@ -24,11 +24,6 @@ the existing B.NE from the wait loop to the first instruction after the loop
 already-completed synchronization on the path that never publishes the local
 byte, without adding stores, changing the global publication, or widening page
 permissions.
-
-The rewrite is legacy-only.  The official Steam game started through Madeira
-Dock has its real Steam synchronisation/authorisation path and must not receive
-this old standalone workaround; build-127 logs showed the signature also occurs
-there and the rewrite fired while the game remained on the splash screen.
 """
 import sys
 
@@ -73,24 +68,10 @@ injected = r'''#ifdef FEX_IOS_HOST
      * skips the stores and the wait together. w20==0 still executes the exact
      * original local/global release stores and poll.
      *
-     * Official Steam/Dock is deliberately excluded. Build 127 proved that the
-     * same machine-code signature occurs in the retail Steam executable; the
-     * legacy standalone rewrite fired there while Steam had already authorised
-     * the launch and the game then stayed on the splash with zero game presents.
-     * MADEIRA_DOCK_SESSION is a native-host variable, so it is reliable here.
-     * A direct Steam-library start publishes SteamAppId=1293830 before FEX runs,
-     * so exclude that path too. Custom/legacy launches keep the old workaround.
-     *
      * B.cond immediate is relative to the branch instruction. I+1 -> I+13 is
      * +12 instructions = +0x30 bytes, so B.NE encodes as 0x54000181. */
-    const char* FH4Dock = std::getenv("MADEIRA_DOCK_SESSION");
-    const char* FH4SteamApp = std::getenv("SteamAppId");
-    const bool FH4OfficialSteam =
-      (FH4Dock && FH4Dock[0] == '1') ||
-      (FH4SteamApp && std::strcmp(FH4SteamApp, "1293830") == 0);
-
     if (const char* FH4SpinFix = std::getenv("MADEIRA_FEX_FH4_SPIN_FIX");
-        FH4SpinFix && FH4SpinFix[0] == '1' && !FH4OfficialSteam) {
+        FH4SpinFix && FH4SpinFix[0] == '1') {
       auto* Words = reinterpret_cast<uint32_t*>(TempCodeBuffer);
       const size_t WordCount = TempSize / sizeof(uint32_t);
 
