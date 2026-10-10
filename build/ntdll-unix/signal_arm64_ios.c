@@ -3842,6 +3842,15 @@ static void *ios_mach_exception_thread( void *arg )
                                     }
                                     if (wi == WX_SLOTS)
                                     {
+                                        /* Steam FH4's unpacker writes ~1200 pages a few times each
+                                         * and fills the table before its one hot page (6.2M stores,
+                                         * 2026-10-09 19:26). Recycle the coldest not-yet-demoted slot. */
+                                        if (victim < 0)
+                                        {
+                                            unsigned low = WX_THRESHOLD;
+                                            for (wi = 0; wi < WX_SLOTS; wi++)
+                                                if (!wx[wi].done && wx[wi].n < low) { low = wx[wi].n; victim = wi; }
+                                        }
                                         if (victim < 0) { __sync_add_and_fetch( &wx_full, 1 ); goto wx_done; }
                                         wi = victim; wx[wi].page = pg; wx[wi].n = 0; wx[wi].done = 0;
                                     }
