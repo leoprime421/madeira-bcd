@@ -850,10 +850,10 @@ static void load_root_certs(void)
         import_certs_from_path( CRYPT_knownLocations[i], TRUE );
 }
 
-/* On iOS this one unix side serves every pseudo-process of the session.  A
- * 32-bit process's root store import must not consume the list another
- * process is still importing from, so a WoW64 caller enumerates with a
- * per-thread position instead (ios_enum_root_certs_wow).  The lock serialises
+/* On iOS this one unix side serves every pseudo-process of the session.  No
+ * process's root store import may consume the list another process imports
+ * from, so every caller enumerates with a per-thread position
+ * (ios_enum_root_certs_wow).  The lock serialises
  * the one-time load and every walk or removal of the list. */
 #include <pthread.h>
 #include <stdint.h>
@@ -867,30 +867,17 @@ static void ios_load_roots_locked(void)
     ios_roots_loaded = TRUE;
 }
 
+static NTSTATUS ios_enum_root_certs_wow( struct enum_root_certs_params *params );
+
+/* 64-bit callers walk with a per-thread position too.  This used to remove
+ * each certificate as it was copied, so the first process to import (Steam,
+ * under Madeira Dock) emptied the list; the next process's rootstore then saw
+ * no host roots and deleted every imported root from the registry, and
+ * Forza Horizon 4 rejected title.mgt.xboxlive.com with
+ * CERT_TRUST_IS_UNTRUSTED_ROOT (device log 2026-10-10 18:27). */
 static NTSTATUS enum_root_certs( void *args )
 {
-    struct enum_root_certs_params *params = args;
-    struct list *ptr;
-    struct root_cert *cert;
-    NTSTATUS status = STATUS_SUCCESS;
-
-    pthread_mutex_lock( &ios_root_lock );
-    ios_load_roots_locked();
-
-    if (!(ptr = list_head( &root_cert_list ))) status = STATUS_NO_MORE_ENTRIES;
-    else
-    {
-        cert = LIST_ENTRY( ptr, struct root_cert, entry );
-        *params->needed = cert->size;
-        if (cert->size <= params->size)
-        {
-            memcpy( params->buffer, cert->data, cert->size );
-            list_remove( &cert->entry );
-            free( cert );
-        }
-    }
-    pthread_mutex_unlock( &ios_root_lock );
-    return status;
+    return ios_enum_root_certs_wow( args );
 }
 
 /* The WoW64 enumeration: each thread keeps its own position; the rootstore
