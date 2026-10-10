@@ -3856,6 +3856,18 @@ static void *ios_mach_exception_thread( void *arg )
                                             for (wi = 0; wi < WX_SLOTS; wi++)
                                                 if (!wx[wi].done && wx[wi].n < low) { low = wx[wi].n; victim = wi; }
                                         }
+                                        /* Then pages already demoted (it decrypts ~16MB a byte at a
+                                         * time, 9.8M stores, 2026-10-09 20:51): their count is spent. */
+                                        if (victim < 0)
+                                        {
+                                            static unsigned wx_rr;
+                                            for (wi = 0; wi < WX_SLOTS && victim < 0; wi++)
+                                            {
+                                                unsigned c = (wx_rr + wi) % WX_SLOTS;
+                                                if (wx[c].done) victim = c;
+                                            }
+                                            if (victim >= 0) wx_rr = victim + 1;
+                                        }
                                         if (victim < 0) { __sync_add_and_fetch( &wx_full, 1 ); goto wx_done; }
                                         wi = victim; wx[wi].page = pg; wx[wi].n = 0; wx[wi].done = 0;
                                     }
