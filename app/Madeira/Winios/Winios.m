@@ -1349,6 +1349,27 @@ void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
     });
 }
 
+/* Top-level windows, topmost first (driver_ios.c, after each window move).
+ * zPosition orders the sibling layers to match Win32; child-window layers
+ * keep 0 and draw nothing of their own. The cursor layer stays at 10000. */
+void winios_window_zorder(const HWND *top_first, int count) {
+    if (!top_first || count <= 0) return;
+    if (count > 4096) count = 4096;
+    NSMutableArray<NSNumber *> *order = [NSMutableArray arrayWithCapacity:count];
+    for (int i = 0; i < count; i++) [order addObject:@((uintptr_t)top_first[i])];
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!g_layers) return;
+        NSUInteger n = order.count;
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        for (NSUInteger i = 0; i < n; i++) {
+            CALayer *l = g_layers[order[i]];
+            if (l) l.zPosition = (CGFloat)(n - i);
+        }
+        [CATransaction commit];
+    });
+}
+
 /* MADEIRA_DUMP_SURFACES=1: save each window's DIB as PNG under
  * Documents/surfdump/ — surf-<hwnd>-first.png once, then
  * surf-<hwnd>-latest.png at most every 2s. Ground truth for whether a

@@ -401,6 +401,7 @@ extern int winios_surface_present( HWND hwnd, int dirty_x, int dirty_y, int dirt
                                     int surf_w, int surf_h, int stride, const void *bits ) __attribute__((weak));
 extern void winios_window_frame( HWND hwnd, int x, int y, int w, int h, int visible,
                                  int cx, int cy, int cw, int ch ) __attribute__((weak));
+extern void winios_window_zorder( const HWND *top_first, int count ) __attribute__((weak));
 extern void winios_cursor_set( unsigned int id, int w, int h, int hot_x, int hot_y,
                                const void *bgra ) __attribute__((weak));
 extern void winios_cursor_show( int show ) __attribute__((weak));
@@ -729,6 +730,21 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         winios_window_frame( hwnd, v->left, v->top, v->right - v->left, v->bottom - v->top, visible,
                              c->left, c->top, c->right - c->left, c->bottom - c->top );
         if (visible && surface && winios_game_windows()) winios_note_dialog_thread( hwnd, v );
+        /* The compositor stacked layers by creation order, so a newer window stayed
+         * on top whatever its Win32 z-order: FH4's 1920x1080 black companion window,
+         * created after the game and placed below it, covered the game (2026-10-10
+         * 16:17). Hand over the real top-level order after every move. */
+        if (winios_window_zorder && winios_desktop_mode())
+        {
+            HWND *list = list_window_children( get_desktop_window() );
+            int n = 0;
+            if (list)
+            {
+                while (list[n]) n++;
+                winios_window_zorder( list, n );
+                free( list );
+            }
+        }
     }
     /* ml505: z-order and geometry churn. If the three same-rect siblings are
      * being reordered, the topmost changes and the surface shows whichever
