@@ -17,6 +17,9 @@ both a source comment and the runtime log string, so substring count == 1 was
 incorrect and stopped CI before madeira-d3d12 compilation even began.
 Build 93 reduces ml1159/ml1161 to minimal ARM64EC-safe C: no diagnostic
 counters, temporary locals, or formatted runtime logging in the repaired paths.
+Build 127 retriggers CI after the FH4 Madeira Dock display route was changed so
+its D3D12 swapchain uses the session fullscreen CAMetalLayer while the desktop
+compositor remains available for GDI/CEF helper windows.
 """
 
 from pathlib import Path
