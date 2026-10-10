@@ -10,7 +10,6 @@
 #import <QuartzCore/CAMetalLayer.h>
 #import <Metal/Metal.h>
 #import <pthread.h>
-#include <string.h>
 
 #include "IOSDisplayShim.h"
 
@@ -151,19 +150,6 @@ static int madeira_desktop_mode(void) {
     return desk;
 }
 
-/* FH4 launched by Madeira Dock lives inside Wine's virtual desktop, but its
- * D3D12 swapchain is a real full-screen game surface. Keeping that swapchain
- * inside the desktop's per-window CAMetalLayer makes it follow AppWindow's
- * transient client rectangle: windowed/focused works, while the desktop-size
- * transition can leave the visible presentation black. Route only Dock's FH4
- * D3D swapchain through the normal game singleton instead. The desktop
- * compositor remains alive above it, so GDI/CEF helper windows (Xbox login)
- * can still be shown. */
-static int madeira_fh4_dock_fullscreen(void) {
-    const char *appid = getenv("MADEIRA_DOCK_APPID");
-    return appid && !strcmp(appid, "1293830");
-}
-
 // Winios.m compositor: per-window CAMetalLayer inside the window's
 // compositor layer (desktop mode only).
 extern CAMetalLayer *winios_metal_layer_for_hwnd(void *hwnd);
@@ -185,11 +171,10 @@ static void my_release_metal_device(macdrv_metal_device d) {
 // The critical two: return a "view" handle that maps to the CAMetalLayer.
 // We pack the layer pointer directly. `v` carries the swapchain's HWND
 // (see my_get_win_data). Desktop mode: per-window layer in the desktop
-// compositor. Game mode (and FH4-via-Dock): the fullscreen singleton.
+// compositor. Game mode: the fullscreen singleton, exactly as before.
 static macdrv_metal_view my_view_create_metal_view(macdrv_view v, macdrv_metal_device d) {
     (void)d;
-    int fh4_fullscreen = madeira_fh4_dock_fullscreen();
-    if (madeira_desktop_mode() && !fh4_fullscreen) {
+    if (madeira_desktop_mode()) {
         CAMetalLayer *layer = winios_metal_layer_for_hwnd((void *)v);
         if (!layer) {
             NSLog(@"[madeira-display] desktop metal layer creation failed for hwnd=%p", (void *)v);
@@ -205,13 +190,6 @@ static macdrv_metal_view my_view_create_metal_view(macdrv_view v, macdrv_metal_d
     if (!layer) {
         NSLog(@"[madeira-display] view_create_metal_view called before layer registered!");
         return NULL;
-    }
-    if (fh4_fullscreen) {
-        static int logged;
-        if (!logged++) {
-            fprintf(stderr, "[madeira-display] FH4 Dock fullscreen: swapchain hwnd=%p uses session Metal layer\n", (void *)v);
-            fflush(stderr);
-        }
     }
     winios_note_game_metal_hwnd((void *)v);
     return (macdrv_metal_view)CFBridgingRetain(layer);
