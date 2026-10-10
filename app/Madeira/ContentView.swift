@@ -2804,6 +2804,7 @@ struct ContentView: View {
             } else {
                 unsetenv("MADEIRA_DOCK_SESSION")
             }
+            if !dockLaunch.dock { unsetenv("MADEIRA_DOCK_APPID") }
             var poolSizeMB = DockPerformancePolicy.sessionPoolMB(standard: 896, dock: dockLaunch.dock, compact: dockLaunch.compact)
             if poolSizeMB != 896 { logStore.log("[dock-pool] compact JIT pool \(poolSizeMB)MB for this Dock launch") }
             // madeira.cfg pool: the JIT pool size in MB (256 to 1152) for every launch; wins over the size above.
@@ -3461,6 +3462,9 @@ struct ContentView: View {
             // start this session from its own desktop size, not a previous one.
             winios_display_mode_changed(Int32(width), Int32(height))
             MadeiraDock.requestLaunch(compactPool: compactPool)
+            // The game Valve's client will start, for per-title fixes that key on the
+            // launched .exe (MADEIRA_EXE is explorer.exe here). Cleared for other launches.
+            setenv("MADEIRA_DOCK_APPID", String(game.id), 1)
             logStore.log("[madeira-dock] starting the host for app \(game.id); Valve's client authenticates and authorizes the launch")
             MadeiraDockModel.shared.watchReport()
             if inLibrary {

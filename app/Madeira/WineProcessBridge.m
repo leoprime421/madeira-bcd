@@ -1152,7 +1152,13 @@ static void *wine_process_thread(void *arg) {
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
         unsetenv("MADEIRA_EXECREQ_LEAVE");
         unsetenv("MADEIRA_REVOCATION_SOFTFAIL");
-        if (fex_forza4_launch) {
+        /* Madeira Dock: Valve's client starts Forza Horizon 4 (app 1293830) itself, so
+         * MADEIRA_EXE is not the game; without these its startup spin never ends
+         * (ForzaHorizon4.exe+0x304d8a0 at 100%, 2026-10-09 21:47). */
+        const char *dock_appid = getenv("MADEIRA_DOCK_APPID");
+        const int fex_forza4_dock = dock_session && dock_session[0] == '1' &&
+                                    dock_appid && !strcmp(dock_appid, "1293830");
+        if (fex_forza4_launch || fex_forza4_dock) {
             /* After Continue FH4 retries one HTTPS request forever: crypt32 cannot reach
              * ocsp.digicert.com / crl3.digicert.com (resolved to 0.0.0.0) and marks the chain
              * "revocation offline". Only that case stops being an error (crypt32 rebuilt by
