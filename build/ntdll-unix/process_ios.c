@@ -1776,8 +1776,12 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
      * 2026-10-05 20:25, build 80: ForzaHorizon4.exe from thread 0030 at +130 s, then every thread of
      * the first process idle). A started process is a headless pseudo-process here ("no guest
      * window"), so the second copy can never show the game while the first waits for it: blank
-     * screen. The spawn is refused and the game goes on in this process. */
-    if (sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ))
+     * screen. The spawn is refused and the game goes on in this process. Only the game's own
+     * relaunch: under Madeira Dock steam.exe starts it, and refusing that is Steam code 45. */
+    if (sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ) &&
+        NtCurrentTeb() && NtCurrentTeb()->Peb && NtCurrentTeb()->Peb->ProcessParameters &&
+        sc_image_is( NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Buffer,
+                     NtCurrentTeb()->Peb->ProcessParameters->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ))
     {
         static int fh4_relaunch_n;
         if (fh4_relaunch_n++ < 8)
