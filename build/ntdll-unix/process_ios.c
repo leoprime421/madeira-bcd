@@ -1788,6 +1788,13 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
             dprintf( 2, "[fh4-relaunch] REFUSING ForzaHorizon4.exe starting itself again (a child has no window)\n" );
         return STATUS_ACCESS_DENIED;
     }
+    if (sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ))
+    {
+        /* Steam (Madeira Dock) starting it: its unpacker needs the W^X fast path (6M stores, 2026-10-09 20:25). */
+        extern volatile int ios_wx_steam_fh4;
+        ios_wx_steam_fh4 = 1;
+        dprintf( 2, "[wx] Forza Horizon 4 started by another process -> W^X fast path on unless MADEIRA_WX is set\n" );
+    }
 
     /* madeira-bcd: env.MADEIRA_CHILD_ARGS -- see child_extra_args. */
     {
