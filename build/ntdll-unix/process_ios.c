@@ -1140,13 +1140,20 @@ static const char *child_extra_args( const char *spec, const WCHAR *image, int i
  * MADEIRA_GUEST_LOG), overriding the game's own log switches.
  * Writes " --enable-logging --log-severity=info --log-file=... [--v=1]" to
  * `out` (`cap` bytes with the NUL) and returns its length, or 0 when `image`
- * is not ForzaWebHelper.exe, `cl` has no --type= or `out` is too small. */
+ * is not an FH4 browser/helper, the helper has no --type=, or `out` is too
+ * small. Steam Dock launches the browser through NtCreateUserProcess too;
+ * WineProcessBridge only adds browser logging for direct game launches. */
 static int fh4_cef_child_args( const WCHAR *image, int image_len, const WCHAR *cl, int cl_len,
                                unsigned int serial, char *out, int cap )
 {
     char type[24];
     int t = sc_switch_end( cl, cl_len, "--type=" ), n = 0, o;
 
+    if (sc_image_is( image, image_len, "forzahorizon4.exe" ) && t < 0)
+    {
+        o = snprintf( out, cap, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_browser.log" );
+        return o >= 0 && o < cap ? o : 0;
+    }
     if (!sc_image_is( image, image_len, "forzawebhelper.exe" ) || t < 0) return 0;
     while (t + n < cl_len && n < (int)sizeof(type) - 1)
     {
@@ -1160,9 +1167,9 @@ static int fh4_cef_child_args( const WCHAR *image, int image_len, const WCHAR *c
      * own --log-severity=/--log-file= (build 73: nothing reached the mirror), so these
      * are appended unconditionally to override them. */
     o = snprintf( out, cap, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_%u_%s.log", serial, type );
-    if (o < cap && !strcmp( type, "gpu-process" ))
+    if (o >= 0 && o < cap && !strcmp( type, "gpu-process" ))
         o += snprintf( out + o, cap - o, " --v=1" );
-    return o < cap ? o : 0;
+    return o >= 0 && o < cap ? o : 0;
 }
 
 /* The browser's new command line, written to `out` (`cap` WCHARs with the
@@ -1747,7 +1754,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         }
     }
 
-    /* madeira-bcd: Forza Horizon 4's CEF children log to their own files -- see fh4_cef_child_args. */
+    /* FH4 browser (including Dock launches) and CEF children get their own logs. */
     {
         static unsigned int fh4_cef_serial;
         char add[160];
@@ -1767,7 +1774,7 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
                 params->CommandLine.Buffer = nbuf;
                 params->CommandLine.Length = (cl_len + n) * sizeof(WCHAR);
                 params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
-                dprintf( 2, "[fh4-cef] ForzaWebHelper child #%u: appended \"%s\"\n", fh4_cef_serial, add );
+                dprintf( 2, "[fh4-cef] browser/helper launch #%u: appended \"%s\"\n", fh4_cef_serial, add );
             }
         }
     }

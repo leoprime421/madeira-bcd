@@ -10284,83 +10284,12 @@ static void segv_handler( int signal, siginfo_t *siginfo, void *sigcontext )
     else if (esr & 0x40) rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
     else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
     rec.ExceptionInformation[1] = (ULONG_PTR)siginfo->si_addr;
-#ifdef WINE_IOS
-    {
-        static uintptr_t last_fault_pc = 0;
-        static int fault_repeat_count = 0;
-        uintptr_t this_pc = PC_sig(context);
-        if (this_pc == last_fault_pc)
-        {
-            fault_repeat_count++;
-            static unsigned long loop_storm;
-            if (fault_repeat_count == 3 && ios_sig_storm_gate( &loop_storm ))
-            {
-                ERR("SEGV LOOP DETECTED: pc=%p addr=%p repeated %d times, dumping TEB+PEB\n",
-                    (void*)this_pc, siginfo->si_addr, fault_repeat_count);
-                /* Dump TEB */
-                if (ios_teb_for_signals)
-                {
-                    uint64_t *teb = (uint64_t *)ios_teb_for_signals;
-                    ERR("  TEB[0x00]=%p TEB[0x08]=%p TEB[0x10]=%p TEB[0x18]=%p\n",
-                        (void*)teb[0], (void*)teb[1], (void*)teb[2], (void*)teb[3]);
-                    ERR("  TEB[0x20]=%p TEB[0x28]=%p TEB[0x30]=%p TEB[0x38]=%p\n",
-                        (void*)teb[4], (void*)teb[5], (void*)teb[6], (void*)teb[7]);
-                    ERR("  TEB[0x40]=%p TEB[0x48]=%p TEB[0x50]=%p TEB[0x58]=%p\n",
-                        (void*)teb[8], (void*)teb[9], (void*)teb[10], (void*)teb[11]);
-                    ERR("  TEB[0x60]=%p TEB[0x68]=%p TEB[0x70]=%p TEB[0x78]=%p\n",
-                        (void*)teb[12], (void*)teb[13], (void*)teb[14], (void*)teb[15]);
-                    /* Dump PEB (TEB+0x60 is PEB pointer) */
-                    uint64_t peb_addr = teb[12]; /* TEB[0x60] */
-                    if (peb_addr > 0x10000)
-                    {
-                        uint64_t *peb = (uint64_t *)peb_addr;
-                        ERR("  PEB @ %p:\n", (void*)peb_addr);
-                        ERR("  PEB[0x00]=%p PEB[0x08]=%p PEB[0x10]=%p PEB[0x18]=%p\n",
-                            (void*)peb[0], (void*)peb[1], (void*)peb[2], (void*)peb[3]);
-                        ERR("  PEB[0x20]=%p PEB[0x28]=%p PEB[0x30]=%p PEB[0x38]=%p\n",
-                            (void*)peb[4], (void*)peb[5], (void*)peb[6], (void*)peb[7]);
-                        ERR("  PEB[0x40]=%p PEB[0x48]=%p PEB[0x50]=%p PEB[0x58]=%p\n",
-                            (void*)peb[8], (void*)peb[9], (void*)peb[10], (void*)peb[11]);
-                        ERR("  PEB[0x60]=%p PEB[0x68]=%p PEB[0x70]=%p PEB[0x78]=%p\n",
-                            (void*)peb[12], (void*)peb[13], (void*)peb[14], (void*)peb[15]);
-                        /* Dump PEB->Ldr (PEB+0x18) if it looks valid */
-                        uint64_t ldr_addr = peb[3]; /* PEB[0x18] */
-                        ERR("  PEB->Ldr = %p\n", (void*)ldr_addr);
-                        if (ldr_addr > 0x10000)
-                        {
-                            uint64_t *ldr = (uint64_t *)ldr_addr;
-                            ERR("  LDR[0x00]=%p LDR[0x08]=%p LDR[0x10]=%p LDR[0x18]=%p\n",
-                                (void*)ldr[0], (void*)ldr[1], (void*)ldr[2], (void*)ldr[3]);
-                            ERR("  LDR[0x20]=%p LDR[0x28]=%p LDR[0x30]=%p LDR[0x38]=%p\n",
-                                (void*)ldr[4], (void*)ldr[5], (void*)ldr[6], (void*)ldr[7]);
-                        }
-                        else
-                        {
-                            ERR("  PEB->Ldr is INVALID (0x%lx)!\n", (unsigned long)ldr_addr);
-                        }
-                    }
-                }
-            }
-            if (fault_repeat_count >= 5)
-            {
-                ERR("SEGV LOOP FATAL: pc=%p addr=%p after %d repeats, forcing thread exit\n",
-                    (void*)this_pc, siginfo->si_addr, fault_repeat_count);
-                /* Skip the faulting instruction and set return value to indicate failure */
-                PC_sig(context) = PC_sig(context) + 4;
-                REGn_sig(0, context) = 0xDEAD0001;
-                ios_fixup_x18_for_return( context );
-                last_fault_pc = 0;
-                fault_repeat_count = 0;
-                return;
-            }
-        }
-        else
-        {
-            last_fault_pc = this_pc;
-            fault_repeat_count = 1;
-        }
-    }
-#endif
+    /* Repeated host PCs are not evidence of an unhandled guest loop. FEX
+     * uses shared exception stubs for different guest instructions/threads;
+     * Windows handlers may legitimately resume and fault there again. Always
+     * let virtual_handle_fault / handle_syscall_fault / setup_exception below
+     * decide the outcome. Skipping a host instruction and poisoning x0 here
+     * bypassed guest SEH and corrupted FEX state after five unrelated faults. */
 #ifdef WINE_IOS
     /* ml938: an access to a sub-floor image window -- a mapping iOS refuses to
      * let us create, emulated instead. Checked BEFORE virtual_handle_fault
