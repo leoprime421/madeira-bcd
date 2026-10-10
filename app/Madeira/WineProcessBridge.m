@@ -918,8 +918,11 @@ static void *wine_process_thread(void *arg) {
                  * reads for 5 minutes). Name the host and the reason: wininet and winhttp
                  * traces plus winsock/dnsapi warnings, a few dozen lines per session. */
                 const char *fh4_exe = getenv("MADEIRA_EXE");
-                if (fh4_exe && strstr(fh4_exe, "ForzaHorizon4.exe")) {
-                    setenv("WINEDEBUG", "err+all,err-virtual,trace+wininet,trace+winhttp,warn+winsock,warn+dnsapi,trace+secur32,warn+crypt,trace+chain", 1);
+                /* Madeira Dock: MADEIRA_EXE is explorer.exe; the Xbox sign-in after Continue
+                 * needs the same view, plus the WinRT/COM activations it tries. */
+                const char *fh4_dock = getenv("MADEIRA_DOCK_APPID");
+                if ((fh4_exe && strstr(fh4_exe, "ForzaHorizon4.exe")) || (fh4_dock && !strcmp(fh4_dock, "1293830"))) {
+                    setenv("WINEDEBUG", "err+all,err-virtual,trace+wininet,trace+winhttp,warn+winsock,warn+dnsapi,trace+secur32,warn+crypt,trace+chain,warn+combase,warn+ole", 1);
                     LOG("WINEDEBUG += wininet/winhttp/secur32/chain trace, winsock/dnsapi/crypt warnings (Forza Horizon 4 network diagnosis)");
                 }
             }
