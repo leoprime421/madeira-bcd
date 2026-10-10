@@ -1149,11 +1149,8 @@ static int fh4_cef_child_args( const WCHAR *image, int image_len, const WCHAR *c
     char type[24];
     int t = sc_switch_end( cl, cl_len, "--type=" ), n = 0, o;
 
-    if (sc_image_is( image, image_len, "forzahorizon4.exe" ) && t < 0)
-    {
-        o = snprintf( out, cap, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_browser.log" );
-        return o >= 0 && o < cap ? o : 0;
-    }
+    /* Not the browser (ForzaHorizon4.exe) itself: with --enable-logging there its
+     * helpers each opened a console window over the game (2026-10-10 16:50). */
     if (!sc_image_is( image, image_len, "forzawebhelper.exe" ) || t < 0) return 0;
     while (t + n < cl_len && n < (int)sizeof(type) - 1)
     {

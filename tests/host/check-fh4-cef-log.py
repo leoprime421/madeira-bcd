@@ -48,11 +48,8 @@ int main( void )
     if (!run( fw, "x --type=renderer --enable-logging --log-severity=disable --log-file=C:\\a.log", 5, o, sizeof(o) ) ||
         strcmp( o, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_5_renderer.log" ))
         FAIL( "the game's own log switches must be overridden: [%s]\n", o );
-    if (!run( "C:\\Steam\\steamapps\\common\\ForzaHorizon4\\ForzaHorizon4.exe",
-              "game --log-severity=disable --log-file=C:\\old.log", 6, o, sizeof(o) ) ||
-        strcmp( o, " --enable-logging --log-severity=info --log-file=C:\\fh4_cef_browser.log" ))
-        FAIL( "Dock browser logging: [%s]\n", o );
-    if (run( "ForzaHorizon4.exe", "game", 6, o, 20 )) FAIL( "browser buffer overflow\n" );
+    if (run( "C:\\Steam\\steamapps\\common\\ForzaHorizon4\\ForzaHorizon4.exe", "game", 6, o, sizeof(o) ))
+        FAIL( "the browser itself must not be touched (its helpers open consoles)\n" );
     if (run( "NotForzaHorizon4.exe", "game", 6, o, sizeof(o) )) FAIL( "look-alike browser touched\n" );
     if (run( "ForzaHorizon4.exe", "game --type=renderer", 6, o, sizeof(o) )) FAIL( "non-browser game touched\n" );
     if (run( fw, "x --enable-logging", 7, o, sizeof(o) ) != 0) FAIL( "browser (no --type=) touched\n" );
@@ -75,4 +72,4 @@ with tempfile.TemporaryDirectory() as d:
     sys.stdout.write(r.stdout + r.stderr)
     if r.returncode or 'ok' not in r.stdout:
         print('FAILED'); sys.exit(1)
-print('PASS: FH4 browser and ForzaWebHelper.exe children get --enable-logging/--log-severity/--log-file, the GPU process --v=1')
+print('PASS: only ForzaWebHelper.exe children get --enable-logging/--log-severity/--log-file, the GPU process --v=1')
