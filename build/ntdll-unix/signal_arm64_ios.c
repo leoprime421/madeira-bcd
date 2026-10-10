@@ -371,13 +371,9 @@ static volatile unsigned ios_wx_repromotes;
  * name), so it silently forced ENABLED on every run and the "disable it and
  * retest" A/B I offered was not actually possible. An env var reaches this
  * native side -- proven by MADEIRA_NO_DFE in ml597/598. */
-/* Set by NtCreateUserProcess when Steam starts Forza Horizon 4 (Madeira Dock): that launch
- * publishes no SteamAppPath, so the ml1157 check below cannot see it. MADEIRA_WX still wins. */
-volatile int ios_wx_steam_fh4;
-
 int ios_wx_enabled( void )
 {
-    static int v = -1, wx_env_unset = -1;
+    static int v = -1;
     if (v < 0)
     {
         /* ml695: OFF BY DEFAULT. This optimization has known stale-translation
@@ -394,8 +390,7 @@ int ios_wx_enabled( void )
         dprintf( STDERR_FILENO, "[wx] ml695 MADEIRA_WX=%s -> W^X %s (experimental, opt-in; threshold 32, %d slots)\n",
                  e ? e : "(unset)", v ? "ENABLED" : "DISABLED", IOS_WX_MAX );
     }
-    if (!v && ios_wx_steam_fh4 && wx_env_unset < 0) wx_env_unset = !getenv( "MADEIRA_WX" );
-    return v || (ios_wx_steam_fh4 && wx_env_unset > 0);
+    return v;
 }
 
 int ios_wx_repromote( unsigned long long pc )

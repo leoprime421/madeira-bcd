@@ -24,14 +24,6 @@ the existing B.NE from the wait loop to the first instruction after the loop
 already-completed synchronization on the path that never publishes the local
 byte, without adding stores, changing the global publication, or widening page
 permissions.
-
-The branch rewrite is a legacy standalone-FH4 workaround, not a general FEX
-memory-ordering fix.  Build 121 proved that the official Steam executable,
-started by Madeira Dock, also happens to generate the same 14-instruction
-signature: the rewrite fired once and the game then entered its exception path
-and terminated with an unhandled C0000005 before creating a window.  Dock keeps
-the stronger no-RCPC/TSO workaround, but must not mutate this guest control flow
-until that rewrite is independently proven necessary for the official binary.
 """
 import sys
 
@@ -76,24 +68,14 @@ injected = r'''#ifdef FEX_IOS_HOST
      * skips the stores and the wait together. w20==0 still executes the exact
      * original local/global release stores and poll.
      *
-     * IMPORTANT (Steam Dock / build 121): the official Steam binary also
-     * generates this signature. That is not enough evidence that changing its
-     * control flow is valid. The rewrite fired immediately before the official
-     * game fell into the C0000005 exception chain. Madeira Dock already enables
-     * MADEIRA_FEX_NO_RCPC, which addresses the original weak-acquire hypothesis
-     * without changing guest branches, so leave this legacy rewrite disabled in
-     * Dock sessions. Standalone/custom FH4 launches retain the old workaround.
-     *
      * B.cond immediate is relative to the branch instruction. I+1 -> I+13 is
      * +12 instructions = +0x30 bytes, so B.NE encodes as 0x54000181. */
     if (const char* FH4SpinFix = std::getenv("MADEIRA_FEX_FH4_SPIN_FIX");
         FH4SpinFix && FH4SpinFix[0] == '1') {
-      const char* DockSession = std::getenv("MADEIRA_DOCK_SESSION");
-      const bool IsSteamDock = DockSession && DockSession[0] == '1';
       auto* Words = reinterpret_cast<uint32_t*>(TempCodeBuffer);
       const size_t WordCount = TempSize / sizeof(uint32_t);
 
-      if (!IsSteamDock) for (size_t I = 0; I + 14 < WordCount; ++I) {
+      for (size_t I = 0; I + 14 < WordCount; ++I) {
         const bool AcquireByte =
           Words[I + 10] == 0x08dffcc8u || /* ldarb  w8,[x6] */
           Words[I + 10] == 0x38bfc0c8u;   /* ldaprb w8,[x6] */
