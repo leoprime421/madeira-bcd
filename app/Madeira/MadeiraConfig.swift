@@ -57,14 +57,43 @@ enum MadeiraConfig {
         return GameProfile.values(ofFile: URL(fileURLWithPath: path))[key].flatMap { $0.isEmpty ? nil : $0 }
     }
 
+    /// Runtime guardrails that are required by one title regardless of a stale
+    /// global setting. They are intentionally applied only at read time: the
+    /// user's madeira.cfg is never rewritten.
+    private static func launchAdjusted(_ key: String, _ value: String?) -> String? {
+        guard key == "pool" else { return value }
+
+        let dockApp = getenv("MADEIRA_DOCK_APPID").map { String(cString: $0) }
+        let directApp = getenv("MADEIRA_STEAM_APPID").map { String(cString: $0) }
+        guard dockApp == "1293830" || directApp == "1293830" else { return value }
+
+        /* FH4 Build 124: ForzaWebHelper/libcef is spawned late, after the game
+         * has already consumed most of a 512 MB executable pool. The gpu-process
+         * then hits JIT-pool EXHAUSTED and core dependencies (dxgi/user32/gdi32)
+         * fail with STATUS_NO_MEMORY, leaving the Microsoft login black.
+         * 896 MB is Madeira's historically proven Steam/CEF pool size; pool
+         * splitting changes placement only and cannot increase a 512 MB total. */
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let trimmed, let mb = Int(trimmed), mb >= 896, mb <= 1152 {
+            /* Build 124 also proves the direct official-EXE path still enables
+             * the old experimental W^X fast path (ml1157), then dies in an
+             * unhandled C0000005. Force the safe default for FH4; a later
+             * env.MADEIRA_WX line from madeira.cfg/game config can still opt in. */
+            setenv("MADEIRA_WX", "0", 1)
+            return trimmed
+        }
+        setenv("MADEIRA_WX", "0", 1)
+        return "896"
+    }
+
     /// The value for `key`, trimmed, or nil when unset. Falls back to the legacy
     /// file ONLY when madeira.cfg does not exist.
     static func get(_ key: String) -> String? {
-        if present { return all()[key] }
+        if present { return launchAdjusted(key, all()[key]) }
         guard let d = documents,
               let txt = try? String(contentsOf: d.appendingPathComponent("madeira-\(key).txt"), encoding: .utf8)
-        else { return nil }
-        return txt.trimmingCharacters(in: .whitespacesAndNewlines)
+        else { return launchAdjusted(key, nil) }
+        return launchAdjusted(key, txt.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     static func bool(_ key: String, default dflt: Bool = false) -> Bool {
