@@ -19,6 +19,11 @@ Build 122 trigger: rebuild after isolating the legacy FH4 branch-over-wait
 rewrite from Madeira Dock. The official Steam executable keeps this no-RCPC
 memory-ordering fix but no longer has its matching guest control-flow sequence
 rewritten merely because it shares the old standalone signature.
+
+Build 125 trigger: FH4 now receives a minimum 896 MB executable pool before
+ForzaWebHelper/libcef starts, because Build 124 exhausted the 512 MB pool and
+then failed to load dxgi/user32/gdi32 with STATUS_NO_MEMORY. The same launch
+guard explicitly disables the old experimental W^X fast path for direct FH4.
 """
 import sys
 
