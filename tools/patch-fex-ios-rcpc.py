@@ -14,6 +14,11 @@ Spider-Man showed wintrust.dll mapped by the parent being pushed into the
 crash-handler child's alias table; the parent then saw its pool-copy RIP as
 NOEXEC. The implementation is applied by patch-ntdll-jit-alias-release.py;
 this file remains the filtered CI trigger so the IPA contains that fix.
+
+Build 122 trigger: rebuild after isolating the legacy FH4 branch-over-wait
+rewrite from Madeira Dock. The official Steam executable keeps this no-RCPC
+memory-ordering fix but no longer has its matching guest control-flow sequence
+rewritten merely because it shares the old standalone signature.
 """
 import sys
 
