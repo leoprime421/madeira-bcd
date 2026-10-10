@@ -86,6 +86,24 @@ enum BCDLaunch {
                     nvidia: LibraryPrefs.nvidia(path), profile: profile)
         LibraryPrefs.markPlayed(entry.title)
         let program = path.split(separator: "\\").last.map(String.init) ?? path
+
+        // FH4 Steam build 127 spends essentially its whole splash screen in the
+        // Mach write-fault emulator: tens of millions of stores from the same
+        // ForzaHorizon4.exe+0x2c858b block, while the D3D12 swapchain has zero
+        // game presents. signal_arm64_ios.c's original 256-slot/threshold-32
+        // W^X path is the configuration already proven to cut this exact class
+        // of repeated store faults without re-promotions. Enable it before Wine
+        // starts, for the retail Steam install only. ExperimentalSettings is
+        // exported at the top of every launch, so another title restores the
+        // user's normal setting and this cannot leak across games.
+        let pathLower = path.lowercased()
+        let fh4Steam = program.lowercased() == "forzahorizon4.exe"
+            && pathLower.contains("\\steamapps\\common\\forzahorizon4\\")
+        if fh4Steam {
+            setenv("MADEIRA_WX", "1", 1)
+            LogStore.shared.log("[fh4-wx] retail Steam FH4: repeated-store W^X relief enabled")
+        }
+
         LogStore.shared.log("[bcd] library launch \(program): avx=\(LibraryPrefs.avx(path) ? 1 : 0) "
                             + "wine-vcrt=\(LibraryPrefs.wineVCRT(path) ? 1 : 0) nvidia=\(LibraryPrefs.nvidia(path) ? 1 : 0) "
                             + "game-config=\(profile.hasSettings ? 1 : 0) metalfx=\(profile.metalFXFactor.map { String($0) } ?? "off")")
