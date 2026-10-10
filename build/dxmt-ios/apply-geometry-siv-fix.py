@@ -20,6 +20,9 @@ counters, temporary locals, or formatted runtime logging in the repaired paths.
 Build 127 retriggers CI after the FH4 Madeira Dock display route was changed so
 its D3D12 swapchain uses the session fullscreen CAMetalLayer while the desktop
 compositor remains available for GDI/CEF helper windows.
+Build 128 retriggers CI for the retail FH4 Steam startup fix: the legacy
+branch-over-wait rewrite is excluded from Steam/Dock and FH4 enables the proven
+W^X repeated-store relief before Wine starts.
 """
 
 from pathlib import Path
