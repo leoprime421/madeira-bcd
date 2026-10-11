@@ -1751,6 +1751,15 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         }
     }
 
+    /* ForzaWebHelper.exe is a console-subsystem image, so each CEF helper got
+     * its own conhost: a console window over the game and a fourth pseudo-process
+     * copying every system DLL into the JIT pool, which left the renderer
+     * EXHAUSTED and the Xbox sign-in page blank (2026-10-10 19:12). Start it
+     * with no console at all, as kernelbase's CONSOLE_HANDLE_SHELL_NO_WINDOW. */
+    if (sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzawebhelper.exe" ) &&
+        (params->ConsoleHandle == (HANDLE)(LONG_PTR)-1 || params->ConsoleHandle == (HANDLE)(LONG_PTR)-2))
+        params->ConsoleHandle = (HANDLE)(LONG_PTR)-4;
+
     /* FH4 browser (including Dock launches) and CEF children get their own logs. */
     {
         static unsigned int fh4_cef_serial;
