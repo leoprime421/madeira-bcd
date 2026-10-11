@@ -742,12 +742,7 @@ enum StikJITHelper {
             .split(separator: "/").last.map(String.init)?.lowercased() ?? ""
         // FH4's CEF children require additional image copies. Its loader now
         // guards failed auxiliary initialization; preserve an explicit opt-out.
-        // Under Madeira Dock MADEIRA_EXE is the host, not the game, so FH4 (Steam app
-        // 1293830) is recognised by its app id too (build 146, 2026-10-11 15:56: no
-        // split, 544MB pool, libcef.dll failed with STATUS_NO_MEMORY, blank login).
-        let fh4AppId = ["MADEIRA_DOCK_APPID", "MADEIRA_STEAM_APPID"]
-            .contains { name in getenv(name).map { String(cString: $0) } == "1293830" }
-        let splitValue = (splitOverride ?? (launchName == "forzahorizon4.exe" || fh4AppId ? "1" : ""))
+        let splitValue = (splitOverride ?? (launchName == "forzahorizon4.exe" ? "1" : ""))
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         poolHole = nil
         if ["1", "on", "true", "yes"].contains(splitValue) {

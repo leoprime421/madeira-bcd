@@ -61,11 +61,20 @@ enum MadeiraConfig {
     /// global setting. They are intentionally applied only at read time: the
     /// user's madeira.cfg is never rewritten.
     private static func launchAdjusted(_ key: String, _ value: String?) -> String? {
-        guard key == "pool" else { return value }
+        guard key == "pool" || key == "pool-split" else { return value }
 
         let dockApp = getenv("MADEIRA_DOCK_APPID").map { String(cString: $0) }
         let directApp = getenv("MADEIRA_STEAM_APPID").map { String(cString: $0) }
         guard dockApp == "1293830" || directApp == "1293830" else { return value }
+
+        /* FH4 build 146 (2026-10-11 15:56, Madeira Dock): no hole fit 896 MB, the
+         * pool shrank to 544 MB and ForzaWebHelper's gpu-process died on
+         * libcef.dll (STATUS_NO_MEMORY), so the login stayed blank. The split pool
+         * adds the run above the main thread's stack; an explicit value still wins. */
+        if key == "pool-split" {
+            let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+            return (trimmed?.isEmpty ?? true) ? "1" : trimmed
+        }
 
         /* FH4 Build 124: ForzaWebHelper/libcef is spawned late, after the game
          * has already consumed most of a 512 MB executable pool. The gpu-process
