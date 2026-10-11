@@ -726,7 +726,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: FEX/build-arm64ec
-          key: fex-arm64ec-${{ steps.fexrev.outputs.sha }}-v2
+          key: fex-arm64ec-${{ steps.fexrev.outputs.sha }}-rpm-tsd-v3
 
       - name: Build xtajit64.dll (FEX fixes, AVX opt-in)
         if: env.MINGW_OK == '1'
@@ -753,7 +753,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: FEX/build-arm64ec
-          key: fex-arm64ec-${{ steps.fexrev.outputs.sha }}-v2
+          key: fex-arm64ec-${{ steps.fexrev.outputs.sha }}-rpm-tsd-v3
 
       # madeira-bcd: FEX's aarch64 WOW64 module (xtajit.dll, the 32-bit CPU
       # backend) was only ever built by hand (build/fex-wow64/build.sh). Built

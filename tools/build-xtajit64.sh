@@ -157,7 +157,23 @@ python3 "$R/tools/patch-fex-ios-alias-capacity.py" "$R/FEX/Source/Windows/ARM64E
 # a read through TEB->ThreadLocalStoragePointer; that pointer is NULL on this
 # early FEX thread. Use TPIDRRO_EL0 host-thread identity instead.
 python3 "$R/tools/patch-fex-ios-allocwatch-threadid.py" "$R/FEX/FEXCore/Source/Utils/AllocWatch.cpp"
+python3 "$R/tools/patch-fex-ios-rpm-threadid.py" "$R/FEX"
 build
+
+# Check the rebuilt DLL so a cached allocator object cannot silently omit this fix.
+if ! grep -aFq '[fex-rpm-id] allocator owner identity uses host TSD' "$B/Bin/libarm64ecfex.dll"; then
+    echo "::error::FEX module is missing the allocator host-TSD identity fix"
+    exit 1
+fi
+RPM_ID_DIS="$("$MINGW/llvm-objdump" -d --triple=aarch64-pc-windows-msvc --no-show-raw-insn "$B/Bin/libarm64ecfex.dll" | awk '
+  /^[[:xdigit:]]+ <.*>:/ { f = ($0 ~ /<[#]?(fex_ios_rpm_lock|get_thread_id)>:/) }
+  f { print }')"
+if ! printf '%s\n' "$RPM_ID_DIS" | grep -Eiq 'mrs[[:space:]]+x[0-9]+,[[:space:]]*TPIDRRO_EL0'; then
+    echo "::error::rpmalloc lock still lacks the host TSD identity read"
+    printf '%s\n' "$RPM_ID_DIS"
+    exit 1
+fi
+echo "::notice::rpmalloc lock uses the host TSD thread identity"
 
 # Verify the compiled ARM64EC module, not just the source patch. The old GTA
 # crash sequence starts AllocWatch::Clear with a Windows TLS load through
