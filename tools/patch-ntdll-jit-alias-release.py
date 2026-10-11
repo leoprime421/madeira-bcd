@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Patch virtual_ios.c: retire stale aliases, fix iOS RWX write-drop, split tail reuse,
-auto-enable the existing W^X fast path for FH4 (including non-Steam layouts),
+auto-enable the existing W^X fast path only for verified retail Steam FH4,
 and apply the per-process late-image alias router used by Build 85."""
 from pathlib import Path
 import subprocess
@@ -148,16 +148,12 @@ if (src.count(helper_sig) != 1 or src.count(hook) != 1 or
     raise SystemExit("post-patch verification failed")
 path.write_text(src)
 
-# FH4 does not crash here; it can spend millions of Mach round trips emulating
-# ordinary stores to one PAGE_EXECUTE_READWRITE SMC page. Madeira already has
-# the ml691/ml694 page-granular W^X fast path for exactly this: after 32 faults
-# it makes the translated guest page host RW (never RWX), so later stores land
-# directly. ml695 left it opt-in globally because of stale translation/address-
-# reuse hazards. Build 83 proved it on retail Steam FH4. Build 140 reproduced
-# the same repeated STLRB/JIT-SIGBUS class on a non-standard FH4 layout, but the
-# SteamAppPath heuristic returned steam-fh4=0. WineProcessBridge already exports
-# MADEIRA_FEX_FH4_SPIN_FIX=1 only for FH4, so accept that title-local marker too
-# while preserving the safe default for every other title.
+# Madeira's W^X fast path is safe only on the retail Steam FH4 path that it was
+# measured against. Build 144 proved that extending it to the modified/non-Steam
+# layout is unsafe: SEC_IMAGE WRITECOPY pages were left RX without a registered
+# RW alias, ordinary SMC stores became PROTECTION_FAILURE, and the process died
+# with C0000005/AV EXEC. Keep the original opt-in semantics for every non-retail
+# layout until those image-backed COW pages have a real dual-map implementation.
 signal_path = path.with_name("signal_arm64_ios.c")
 sig = signal_path.read_text()
 wx_old = '''        const char *e = getenv( "MADEIRA_WX" );
@@ -166,27 +162,25 @@ wx_old = '''        const char *e = getenv( "MADEIRA_WX" );
                  e ? e : "(unset)", v ? "ENABLED" : "DISABLED", IOS_WX_MAX );'''
 wx_new = '''        const char *e = getenv( "MADEIRA_WX" );
         const char *steam_path = getenv( "SteamAppPath" );
-        const char *fh4_flag = getenv( "MADEIRA_FEX_FH4_SPIN_FIX" );
         int steam_fh4 = steam_path && strstr( steam_path, "steamapps" ) &&
                         strstr( steam_path, "ForzaHorizon4" );
-        int title_fh4 = fh4_flag && fh4_flag[0] == '1';
 
-        /* ml1159: Build 83 official Steam FH4 spent >3.5M faults at one JIT
-         * store site targeting one SMC page while W^X was OFF. Build 140's
-         * modified FH4 reproduces the same repeated STLRB/JIT-SIGBUS class,
-         * but SteamAppPath is C:\\Forza Horizon 4 Opti V3\\gamedata so the old
-         * retail-path heuristic incorrectly leaves W^X disabled. The bridge's
-         * FH4-only spin-fix marker is already cleared/set per title; use it as
-         * a second title proof. Explicit MADEIRA_WX=0/1 still wins. */
+        /* ml1160: Build 144 regression guard. The modified FH4 layout reaches
+         * SEC_IMAGE WRITECOPY SMC pages that have no anon-JIT RW alias. Enabling
+         * W^X there caused PROTECTION_FAILURE followed by C0000005 AV EXEC.
+         * Auto-enable only on the verified retail Steam layout; explicit
+         * MADEIRA_WX=0/1 still wins for manual experiments. */
         if (e) v = (e[0] == '1') ? 1 : 0;
-        else v = (steam_fh4 || title_fh4) ? 1 : 0;
+        else v = steam_fh4 ? 1 : 0;
         dprintf( STDERR_FILENO,
-                 "[wx] ml1159 MADEIRA_WX=%s steam-fh4=%d title-fh4=%d -> W^X %s "
-                 "(threshold 32, %d slots)\\n",
-                 e ? e : "(unset)", steam_fh4, title_fh4,
+                 "[wx] ml1160 MADEIRA_WX=%s steam-fh4=%d -> W^X %s "
+                 "(non-Steam regression guard; threshold 32, %d slots)\\n",
+                 e ? e : "(unset)", steam_fh4,
                  v ? "ENABLED" : "DISABLED", IOS_WX_MAX );'''
-wx_marker = "[wx] ml1159"
+wx_marker = "[wx] ml1160"
 if wx_marker not in sig:
+    if src.count("ml1159") or sig.count("ml1159"):
+        raise SystemExit("FH4 W^X source already carries ml1159 unexpectedly")
     if sig.count(wx_old) != 1:
         raise SystemExit(f"FH4 W^X anchor count={sig.count(wx_old)}, expected 1")
     sig = sig.replace(wx_old, wx_new, 1)
@@ -203,4 +197,4 @@ mp_patch = Path(__file__).with_name("patch-ntdll-jit-alias-multiprocess.py")
 subprocess.run([sys.executable, str(mp_patch), str(path)], check=True)
 
 print(f"{path}: alias retirement + RWX write-drop ml1154 + tail split ml1156 + multiprocess aliases ml1158")
-print(f"{signal_path}: FH4 auto W^X ml1159 (Steam path or title marker)")
+print(f"{signal_path}: FH4 W^X ml1160 retail-only regression guard")
