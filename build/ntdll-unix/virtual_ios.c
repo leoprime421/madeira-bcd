@@ -25032,14 +25032,23 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
              * range FEX itself limits a buffer to) while HEAD_RESERVE stays free
              * between the image head and the tail. */
             enum { TAIL_SMALL = 0x1000000, TAIL_MAX = 0x8000000, HEAD_RESERVE = 48u * 1024 * 1024 };
+            /* madeira-bcd: Forza Horizon 4 (MADEIRA_FH4_JIT_TAIL_CAP=1, set by the app).
+             * Its sign-in starts ForzaWebHelper GPU, network and renderer children late,
+             * each copying ~45-90MB of DLLs into the head. Build 152 (2026-10-11 17:40):
+             * the game's buffer grew to 128MB and the GPU child's to 64MB just before,
+             * the network and renderer children hit EXHAUSTED on their DLLs and the
+             * sign-in page stayed white. Cap a buffer at 32MB and keep 160MB for the head. */
+            const char *fh4_cap = getenv( "MADEIRA_FH4_JIT_TAIL_CAP" );
+            size_t tail_max = TAIL_MAX, head_reserve = HEAD_RESERVE;
             size_t head_now = jit_pool_offset, tail_now = ios_jit_tail_reserved;
             /* madeira-bcd split pool: a hole still between head and tail is not room */
             size_t hole_now = ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
                                                      ios_jit_hole_off, ios_jit_hole_end );
-            size_t room = ios_jit_pool_size_global > head_now + tail_now + hole_now + HEAD_RESERVE
-                        ? ios_jit_pool_size_global - head_now - tail_now - hole_now - HEAD_RESERVE : 0;
-            size_t cap = TAIL_SMALL;
-            while (cap < TAIL_MAX && cap * 2 <= room) cap *= 2;
+            size_t room, cap = TAIL_SMALL;
+            if (fh4_cap && fh4_cap[0] == '1') { tail_max = 0x2000000; head_reserve = 160u * 1024 * 1024; }
+            room = ios_jit_pool_size_global > head_now + tail_now + hole_now + head_reserve
+                 ? ios_jit_pool_size_global - head_now - tail_now - hole_now - head_reserve : 0;
+            while (cap < tail_max && cap * 2 <= room) cap *= 2;
             /* A retired generation of this size already sitting on the carve
              * free-list costs the pool nothing new: never refuse that. */
             if (alloc_size > cap)

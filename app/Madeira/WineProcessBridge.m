@@ -1153,6 +1153,7 @@ static void *wine_process_thread(void *arg) {
         /* Title-local FEX switches: clear stale state from an earlier pseudo-process. */
         unsetenv("MADEIRA_FEX_NO_RCPC");
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
+        unsetenv("MADEIRA_FH4_JIT_TAIL_CAP");
         unsetenv("MADEIRA_EXECREQ_LEAVE");
         unsetenv("MADEIRA_REVOCATION_SOFTFAIL");
         /* Madeira Dock: Valve's client starts Forza Horizon 4 (app 1293830) itself, so
@@ -1169,6 +1170,8 @@ static void *wine_process_thread(void *arg) {
             setenv("MADEIRA_REVOCATION_SOFTFAIL", "1", 1);
             setenv("MADEIRA_FEX_NO_RCPC", "1", 1);
             setenv("MADEIRA_FEX_FH4_SPIN_FIX", "1", 1);
+            /* ntdll: smaller FEX code buffers so ForzaWebHelper's children fit the pool. */
+            setenv("MADEIRA_FH4_JIT_TAIL_CAP", "1", 1);
             /* Wine's ARM64EC NtProtectVirtualMemory executable-request path
              * now clears callback state in the source rebuilt by CI. Do not
              * enable the old layout-dependent binary patch here. */
@@ -1870,13 +1873,6 @@ static void *wine_process_thread(void *arg) {
                     if (!strncmp(argv[j], cef_log_flags[k], sw)) { present = 1; break; }
                 if (!present) argv[argc++] = cef_log_flags[k];
             }
-            /* CEF children as threads, as process_ios.c does when Steam starts the game:
-             * separate ForzaWebHelper pseudo-processes exhaust the JIT pool. */
-            const char *mp = getenv("MADEIRA_FH4_CEF_MULTIPROCESS");
-            int sp_present = 0;
-            for (int j = 2; j < argc; j++)
-                if (!strcmp(argv[j], "--single-process")) { sp_present = 1; break; }
-            if (!(mp && mp[0] == '1') && !sp_present) argv[argc++] = "--single-process";
         }
         argv[argc] = NULL;
         dprintf(STDERR_FILENO, "[WineProc] argv[1] = %s\n", exe_path);
