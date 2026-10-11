@@ -1,15 +1,19 @@
 #!/usr/bin/env python3
-"""Fix Wine's ARM64EC NtProtectVirtualMemory executable-request early return.
+"""Patch pinned Wine sources needed by Madeira's iOS compatibility layer.
 
-The executable-protection probe calls enter_syscall_callback(), performs the
-protect and post-notification, then used to return without its matching
-leave_syscall_callback(). That leaves the callback state set and suppresses
-later executable-memory notifications to FEX. Patch the pinned Wine submodule
-before rebuilding its shipped ARM64EC ntdll.dll.
+1. Fix Wine's ARM64EC NtProtectVirtualMemory executable-request early return.
+2. Force FH4's Xbox realtime endpoint offline inside WinHTTP, before DNS/TLS.
+
+The FH4 gate is deliberately narrow: it only applies when the current Windows
+image basename is ForzaHorizon4.exe and the WinHttpConnect hostname is exactly
+rta.xboxlive.com. Other Xbox/Microsoft traffic and other titles are untouched.
 """
 from pathlib import Path
 import sys
 
+# ---------------------------------------------------------------------------
+# ARM64EC executable-request callback-state fix.
+# ---------------------------------------------------------------------------
 path = Path(sys.argv[1] if len(sys.argv) > 1 else "wine/dlls/ntdll/signal_arm64ec.c")
 source = path.read_text(encoding="utf-8")
 start = source.find("NTSTATUS SYSCALL_API NtProtectVirtualMemory(")
@@ -23,16 +27,15 @@ if marker in function:
     if "[exec-req-leave-source]" not in function:
         raise SystemExit("exec-req leave: source marker found without diagnostic")
     print("exec-req leave: already patched")
-    raise SystemExit(0)
-
-old = """            else if (pNotifyMemoryProtect
+else:
+    old = """            else if (pNotifyMemoryProtect
                      && !ios_bulk_protect_suppressed( "cur-post", *addr_ptr, *size_ptr, new_prot ))
                 pNotifyMemoryProtect( *addr_ptr, *size_ptr, new_prot, TRUE, st );
             return st;"""
-if function.count(old) != 1:
-    raise SystemExit("exec-req leave: expected early-return layout not found exactly once")
+    if function.count(old) != 1:
+        raise SystemExit("exec-req leave: expected early-return layout not found exactly once")
 
-new = """            else if (pNotifyMemoryProtect
+    new = """            else if (pNotifyMemoryProtect
                      && !ios_bulk_protect_suppressed( "cur-post", *addr_ptr, *size_ptr, new_prot ))
                 pNotifyMemoryProtect( *addr_ptr, *size_ptr, new_prot, TRUE, st );
             /* madeira-bcd: restore syscall callback state on executable-protect early return */
@@ -43,6 +46,59 @@ new = """            else if (pNotifyMemoryProtect
                     ERR( "[exec-req-leave-source] cleared callback after executable protect\\n" );
             }
             return st;"""
-function = function.replace(old, new, 1)
-path.write_text(source[:start] + function + source[end:], encoding="utf-8")
-print("exec-req leave: patched", path)
+    function = function.replace(old, new, 1)
+    path.write_text(source[:start] + function + source[end:], encoding="utf-8")
+    print("exec-req leave: patched", path)
+
+# ---------------------------------------------------------------------------
+# FH4 Xbox RTA offline gate.
+#
+# The modified/offline FH4 build uses a local Xbox/Goldberg identity, but the
+# title still opens real WinHTTP realtime connections to rta.xboxlive.com.
+# Those requests reach Microsoft's websocket upgrade path and can leave the
+# game waiting indefinitely at Continue. Do not forge a successful Xbox auth
+# response; make only this realtime endpoint deterministically unavailable.
+# ---------------------------------------------------------------------------
+winhttp_path = Path("wine/dlls/winhttp/session.c")
+winhttp = winhttp_path.read_text(encoding="utf-8")
+rta_marker = "/* madeira-bcd: FH4-only Xbox RTA offline gate */"
+
+if rta_marker in winhttp:
+    if "[fh4-rta-offline]" not in winhttp:
+        raise SystemExit("FH4 RTA offline: source marker found without diagnostic")
+    print("FH4 RTA offline: already patched")
+else:
+    anchor = """    if (!server)
+    {
+        SetLastError( ERROR_INVALID_PARAMETER );
+        return NULL;
+    }
+"""
+    if winhttp.count(anchor) != 1:
+        raise SystemExit("FH4 RTA offline: WinHttpConnect server-validation anchor changed")
+
+    gate = anchor + """    /* madeira-bcd: FH4-only Xbox RTA offline gate */
+    {
+        WCHAR image[MAX_PATH];
+        const WCHAR *basename = image;
+        DWORD len = GetModuleFileNameW( NULL, image, MAX_PATH );
+
+        if (len && len < MAX_PATH)
+        {
+            const WCHAR *p = image + len;
+            while (p > image && p[-1] != '\\\\' && p[-1] != '/') p--;
+            basename = p;
+
+            if (!lstrcmpiW( basename, L\"ForzaHorizon4.exe\" ) &&
+                !lstrcmpiW( server, L\"rta.xboxlive.com\" ))
+            {
+                WARN( \"[fh4-rta-offline] blocked WinHttpConnect to %s before DNS/TLS\\n\",
+                      debugstr_w(server) );
+                SetLastError( ERROR_WINHTTP_NAME_NOT_RESOLVED );
+                return NULL;
+            }
+        }
+    }
+"""
+    winhttp_path.write_text(winhttp.replace(anchor, gate, 1), encoding="utf-8")
+    print("FH4 RTA offline: patched", winhttp_path)
