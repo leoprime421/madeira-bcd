@@ -1870,6 +1870,13 @@ static void *wine_process_thread(void *arg) {
                     if (!strncmp(argv[j], cef_log_flags[k], sw)) { present = 1; break; }
                 if (!present) argv[argc++] = cef_log_flags[k];
             }
+            /* CEF children as threads, as process_ios.c does when Steam starts the game:
+             * separate ForzaWebHelper pseudo-processes exhaust the JIT pool. */
+            const char *mp = getenv("MADEIRA_FH4_CEF_MULTIPROCESS");
+            int sp_present = 0;
+            for (int j = 2; j < argc; j++)
+                if (!strcmp(argv[j], "--single-process")) { sp_present = 1; break; }
+            if (!(mp && mp[0] == '1') && !sp_present) argv[argc++] = "--single-process";
         }
         argv[argc] = NULL;
         dprintf(STDERR_FILENO, "[WineProc] argv[1] = %s\n", exe_path);

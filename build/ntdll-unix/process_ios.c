@@ -1805,6 +1805,38 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         return STATUS_ACCESS_DENIED;
     }
 
+    /* madeira-bcd: FH4 is its own CEF browser and starts ForzaWebHelper.exe for the
+     * GPU, network and renderer children; each is a pseudo-process copying every
+     * system DLL into the shared JIT pool. Under Madeira Dock, Steam + FH4 + the GPU
+     * child filled even the 864MB split pool, the network and renderer children died
+     * on libcef.dll (STATUS_NO_MEMORY) and the Xbox sign-in stayed white (build 150,
+     * 2026-10-11 16:56). As for steamwebhelper and Social Club: --single-process when
+     * the game is started; MADEIRA_FH4_CEF_MULTIPROCESS=1 keeps the children. */
+    {
+        const char *mp = getenv( "MADEIRA_FH4_CEF_MULTIPROCESS" );
+        int cl_len = params->CommandLine.Length / sizeof(WCHAR);
+
+        if (!(mp && mp[0] == '1') &&
+            sc_image_is( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR), "forzahorizon4.exe" ) &&
+            sc_switch_end( params->CommandLine.Buffer, cl_len, "--single-process" ) < 0)
+        {
+            static const char sp[] = " --single-process";
+            int n = sizeof(sp) - 1, k;
+            WCHAR *nbuf = malloc( (cl_len + n + 1) * sizeof(WCHAR) );   /* leaks once per start, as below */
+
+            if (nbuf)
+            {
+                memcpy( nbuf, params->CommandLine.Buffer, cl_len * sizeof(WCHAR) );
+                for (k = 0; k < n; k++) nbuf[cl_len + k] = (WCHAR)sp[k];
+                nbuf[cl_len + n] = 0;
+                params->CommandLine.Buffer = nbuf;
+                params->CommandLine.Length = (cl_len + n) * sizeof(WCHAR);
+                params->CommandLine.MaximumLength = params->CommandLine.Length + sizeof(WCHAR);
+                dprintf( 2, "[fh4-cef] ForzaHorizon4.exe started with --single-process (CEF children as threads)\n" );
+            }
+        }
+    }
+
     /* madeira-bcd: env.MADEIRA_CHILD_ARGS -- see child_extra_args. */
     {
         const char *extra = child_extra_args( getenv( "MADEIRA_CHILD_ARGS" ), params->ImagePathName.Buffer,
