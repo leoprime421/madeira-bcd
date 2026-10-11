@@ -1760,11 +1760,14 @@ NTSTATUS WINAPI NtCreateUserProcess( HANDLE *process_handle_ptr, HANDLE *thread_
         (params->ConsoleHandle == (HANDLE)(LONG_PTR)-1 || params->ConsoleHandle == (HANDLE)(LONG_PTR)-2))
         params->ConsoleHandle = (HANDLE)(LONG_PTR)-4;
 
-    /* FH4 browser (including Dock launches) and CEF children get their own logs. */
+    /* FH4's CEF children get their own logs with MADEIRA_FH4_CEF_LOG=1 only:
+     * --enable-logging makes each Chromium child AllocConsole (a conhost window
+     * and one more pseudo-process in the JIT pool, 2026-10-10 19:56). */
     {
         static unsigned int fh4_cef_serial;
         char add[160];
-        int n = fh4_cef_child_args( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR),
+        const char *cef_log = getenv( "MADEIRA_FH4_CEF_LOG" );
+        int n = !(cef_log && cef_log[0] == '1') ? 0 : fh4_cef_child_args( params->ImagePathName.Buffer, params->ImagePathName.Length / sizeof(WCHAR),
                                     params->CommandLine.Buffer, params->CommandLine.Length / sizeof(WCHAR),
                                     __atomic_add_fetch( &fh4_cef_serial, 1, __ATOMIC_RELAXED ), add, sizeof(add) );
         if (n)
