@@ -24,6 +24,10 @@ Build 125 trigger: FH4 now receives a minimum 896 MB executable pool before
 ForzaWebHelper/libcef starts, because Build 124 exhausted the 512 MB pool and
 then failed to load dxgi/user32/gdi32 with STATUS_NO_MEMORY. The same launch
 guard explicitly disables the old experimental W^X fast path for direct FH4.
+
+Build 145 trigger: rebuild with ml1160, which rolls back automatic W^X for
+non-Steam/modified FH4 after Build 144 reproduced SEC_IMAGE WRITECOPY
+PROTECTION_FAILURE followed by terminal C0000005 AV EXEC.
 """
 import sys
 
