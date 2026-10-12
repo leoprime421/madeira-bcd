@@ -17275,8 +17275,10 @@ IOS_DC_INLINE int ios_dc_zero_edge( char *base, size_t size )
     kr = ios_dc_write_zero( base, size );
     if (kr == KERN_SUCCESS) return 1;
     /* Do not apply the old alias/maximum-protection gate to writable pages.
-     * It is needed only before changing a protected host page's permissions. */
-    if (kr == KERN_PROTECTION_FAILURE && ios_dc_prepare( &edge, base, size ))
+     * It is needed only before changing a protected host page's permissions.
+     * Darwin reports a PROT_NONE destination as KERN_INVALID_ADDRESS, not
+     * KERN_PROTECTION_FAILURE; ios_dc_prepare still requires a mapped page. */
+    if ((kr == KERN_PROTECTION_FAILURE || kr == KERN_INVALID_ADDRESS) && ios_dc_prepare( &edge, base, size ))
         kr = ios_dc_write_zero( base, size );
     restored = ios_dc_restore( &edge );
     if (kr != KERN_SUCCESS || !restored)

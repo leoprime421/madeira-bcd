@@ -74,6 +74,9 @@ static kern_return_t mach_vm_protect(int task, mach_vm_address_t addr, mach_vm_s
 static kern_return_t mach_vm_write(int task, mach_vm_address_t addr, vm_offset_t data,
     mach_msg_type_number_t size)
 {
+    /* As Darwin: no access at all is KERN_INVALID_ADDRESS, read-only is a
+     * protection failure (macOS runner, 2026-10-12: kr=1 on PROT_NONE). */
+    if (!current_prot) return KERN_INVALID_ADDRESS;
     if (!(current_prot & PROT_WRITE)) return KERN_PROTECTION_FAILURE;
     memcpy((void *)addr, (void *)data, size);
     return KERN_SUCCESS;
