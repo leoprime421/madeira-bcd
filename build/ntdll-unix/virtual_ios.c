@@ -23375,6 +23375,10 @@ static NTSTATUS ios_sc_glued_pools( void **pick, SIZE_T *sz, ULONG type, ULONG p
     return STATUS_SUCCESS;
 }
 
+#ifdef WINE_IOS
+static void ios_fd_release_overlap( const void *addr, size_t size );
+#endif
+
 NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
 {
@@ -23464,6 +23468,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
     if (!is_old_wow64() && zero_bits >= 32) return STATUS_INVALID_PARAMETER_3;
 #endif
     if (type & ~type_mask) return STATUS_INVALID_PARAMETER;
+#ifdef WINE_IOS
+    /* madeira-bcd: give back a held release this exact reservation asks for */
+    if (process == NtCurrentProcess() && *ret && (type & MEM_RESERVE))
+        ios_fd_release_overlap( *ret, *size_ptr );
+#endif
 
     if (process != NtCurrentProcess())
     {
@@ -25022,6 +25031,11 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     if (type & ~type_mask) return STATUS_INVALID_PARAMETER;
     if (*ret && (align || limit_low || limit_high)) return STATUS_INVALID_PARAMETER;
     if (!*size_ptr) return STATUS_INVALID_PARAMETER;
+#ifdef WINE_IOS
+    /* madeira-bcd: give back a held release this exact reservation asks for */
+    if (process == NtCurrentProcess() && *ret && (type & MEM_RESERVE))
+        ios_fd_release_overlap( *ret, *size_ptr );
+#endif
 
 #ifdef WINE_IOS
     /* iOS-Madeira: For FEX-style EC_CODE RWX allocations, allocate from the
@@ -25753,6 +25767,44 @@ static int ios_fd_take( char *base, SIZE_T *out_size )
                      said, base, (unsigned long)vsize, ios_fd_ms(), ios_fd_n );
     }
     return ok;
+}
+/* A reservation AT an explicit address that a held release still covers: the
+ * caller freed it and wants it back, as Chromium does on Windows (V8's
+ * OS::Allocate and PartitionAlloc's TrimMapping release an oversized block and
+ * re-reserve its aligned middle at once). Holding it made that request fail with
+ * STATUS_CONFLICTING_ADDRESSES millions of times: one FH4 sign-in renderer
+ * aborted, the other spun, the page stayed white (build 158, 2026-10-11 21:28).
+ * Release the overlapping holds now; the delay still protects everything else. */
+static void ios_fd_release_overlap( const void *addr, size_t size )
+{
+    char *todo[IOS_FD_N], *lo = (char *)addr, *hi = (char *)addr + size;
+    unsigned int nt = 0, i;
+    if (!size || !ios_fd_n) return;
+    pthread_mutex_lock( &ios_fd_lock );
+    for (i = 0; i < ios_fd_n; )
+    {
+        char *b = ios_fd_ring[i].base;
+        if (b < hi && lo < b + ios_fd_ring[i].size)
+        {
+            todo[nt++] = b;
+            ios_fd_bytes -= ios_fd_ring[i].size;
+            ios_fd_ring[i] = ios_fd_ring[--ios_fd_n];
+            continue;
+        }
+        i++;
+    }
+    pthread_mutex_unlock( &ios_fd_lock );
+    for (i = 0; i < nt; i++)
+    {
+        void *b = todo[i]; SIZE_T sz = 0;
+        static unsigned long said;
+        ios_fd_bypass = 1;
+        NtFreeVirtualMemory( NtCurrentProcess(), &b, &sz, MEM_RELEASE );
+        ios_fd_bypass = 0;
+        if (++said <= 8 || !(said % 1024))
+            dprintf( 2, "[free-delay] #%lu held release of %p released early: a reservation at %p+0x%lx asks for it\n",
+                     said, todo[i], addr, (unsigned long)size );
+    }
 }
 #endif
 
