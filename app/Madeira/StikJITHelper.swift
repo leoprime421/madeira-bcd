@@ -93,6 +93,9 @@ enum StikJITHelper {
     /// PROT_NONE placeholders). ContentView exports it as WINE_IOS_JIT_HOLE; ntdll
     /// never hands it out. nil for a pool of one region.
     private(set) static var poolHole: (off: Int, end: Int)?
+    /// `pool-split = low` with a third region: the second hole (the main thread's
+    /// stack), above poolHole. Exported after poolHole in WINE_IOS_JIT_HOLE.
+    private(set) static var poolHole2: (off: Int, end: Int)?
 
     /// madeira-bcd Social Club layout 2 (`env.MADEIRA_SC_PA_POOLS = 2` in the game's
     /// file or madeira.cfg; virtual_ios.c, ios_sc2_boot_holds): the RW alias goes to
@@ -751,11 +754,22 @@ enum StikJITHelper {
         // login.live.com renderer could not even load its ntdll and the game died
         // in libcef. The run below is 450MB+ in every log, the one above 256MB.
         // The window lies in the hole, so it is no longer offered to ntdll.
+        // 2026-10-12 11:26: a 340MB run below left the pool at 896MB and the
+        // password page's renderer could not start; the run above the stack is
+        // now taken as well when the request leaves room for it (two holes).
+        poolHole2 = nil
         if splitValue == "low", poolSize < requestedPoolSize,
            let low = takeLowRegion(below: rxAddrV, want: requestedPoolSize - poolSize,
                                    exeWindow: (exeWinBase, exeWinSize)) {
-            if let rw = mapSplitAlias(rxA: low.base, sizeA: low.size, rxB: rxAddrV, sizeB: vm_address_t(poolSize)) {
-                let span = Int(rxAddrV - low.base) + poolSize
+            let leftover = requestedPoolSize - poolSize - Int(low.size)
+            let high = leftover >= 64 << 20
+                ? takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: leftover, exeWindow: (exeWinBase, exeWinSize))
+                : nil
+            var regions: [(base: vm_address_t, size: vm_address_t)] = [low, (rxAddrV, vm_address_t(poolSize))]
+            if let h = high { regions.append(h) }
+            if let rw = mapPoolAlias(regions) {
+                let last = regions[regions.count - 1]
+                let span = Int(last.base + last.size - low.base)
                 let holeEnd = Int(rxAddrV - low.base)
                 let rwPtr = UnsafeMutableRawPointer(bitPattern: rw)!
                 unsetenv("WINE_IOS_EXE_WINDOW")
@@ -763,20 +777,29 @@ enum StikJITHelper {
                     + "RW=[\(String(format: "%p", Int(rw))),\(String(format: "%p", Int(rw) + span))) "
                     + "offset=0x\(String(Int(rw) - Int(low.base), radix: 16)) windowHeld=\(windowHeld) rwOverlap=false",
                     level: .success)
-                let exemptA = jit_make_region_no_footprint(rwPtr, Int(low.size), "pool-RW-alias-low")
-                let exemptB = jit_make_region_no_footprint(rwPtr + holeEnd, poolSize, "pool-RW-alias")
-                LogStore.shared.log("[no-footprint] pool applied=\(exemptA && exemptB)", level: exemptA && exemptB ? .success : .error)
+                var exempt = true
+                for (i, r) in regions.enumerated() {
+                    exempt = jit_make_region_no_footprint(rwPtr + Int(r.base - low.base), Int(r.size), "pool-RW-alias-\(i)") && exempt
+                }
+                LogStore.shared.log("[no-footprint] pool applied=\(exempt)", level: exempt ? .success : .error)
                 poolHole = (off: Int(low.size), end: holeEnd)
+                if let h = high {
+                    poolHole2 = (off: holeEnd + poolSize, end: Int(h.base - low.base))
+                    LogStore.shared.log(String(format: "[pool-split] third region [0x%lx,0x%lx) %luMB above the stack; pool offsets "
+                        + "[0x%lx,0x%lx) are the second hole", Int(h.base), Int(h.base + h.size), Int(h.size >> 20),
+                        holeEnd + poolSize, Int(h.base - low.base)), level: .success)
+                }
                 LogStore.shared.log(String(format: "[pool-split] JIT pool = RX [0x%lx,0x%lx) %luMB below the executable window + "
                     + "[0x%lx,0x%lx) %luMB as one %luMB span; pool offsets [0x%lx,0x%lx) (%luMB, the window) are never handed out",
                     Int(low.base), Int(low.base + low.size), Int(low.size >> 20),
                     Int(rxAddrV), Int(rxAddrV) + poolSize, poolSize >> 20,
-                    (Int(low.size) + poolSize) >> 20, Int(low.size), holeEnd, (holeEnd - Int(low.size)) >> 20),
+                    regions.reduce(0) { $0 + Int($1.size) } >> 20, Int(low.size), holeEnd, (holeEnd - Int(low.size)) >> 20),
                     level: .success)
                 LogStore.shared.log("JIT pool ready (debugger still attached).", level: .success)
                 poolTaken = true
                 return (rx: UnsafeMutableRawPointer(bitPattern: low.base)!, rw: rwPtr, size: span)
             }
+            if let h = high { vm_deallocate(mach_task_self_, h.base, vm_size_t(h.size)) }
             let dkr = vm_deallocate(mach_task_self_, low.base, vm_size_t(low.size))
             LogStore.shared.log("[pool-split] no RW alias for the low split pool — low region released (kr=\(dkr)); "
                 + "trying the run above the stack", level: .error)
@@ -1126,6 +1149,49 @@ enum StikJITHelper {
             LogStore.shared.log(String(format: "[pool-split] RW alias at 0x%lx failed (remap %d/%d, protect %d, hole %d)",
                                        Int(rw), krA, krB, krRW, krHole), level: .error)
             return nil
+        }
+        return rw
+    }
+
+    /// madeira-bcd split pool, `pool-split = low`: ONE RW alias for any number of
+    /// ascending regions at the same RX->RW distance; the alias of the gaps stays
+    /// reserved and PROT_NONE. Same placement rules as mapSplitAlias. Returns the
+    /// alias base, or nil with nothing left mapped.
+    private static func mapPoolAlias(_ regions: [(base: vm_address_t, size: vm_address_t)]) -> vm_address_t? {
+        guard let first = regions.first, let last = regions.last else { return nil }
+        let span = last.base + last.size - first.base
+        var rw: vm_address_t = rwAliasHint()
+        let rwFixed = rw == scLayout2Alias
+        var kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), rwFixed ? 0 /* VM_FLAGS_FIXED */ : VM_FLAGS_ANYWHERE)
+        if rwFixed && kr != KERN_SUCCESS {
+            rwAliasDrop(kr)
+            rw = 0x7000000000
+            kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
+        } else if kr == KERN_SUCCESS && !rwAliasKeep(rw) {
+            vm_deallocate(mach_task_self_, rw, vm_size_t(span))
+            rw = 0x7000000000
+            kr = vm_allocate(mach_task_self_, &rw, vm_size_t(span), VM_FLAGS_ANYWHERE)
+        }
+        guard kr == KERN_SUCCESS else {
+            LogStore.shared.log("[pool-split] could not reserve \(span >> 20)MB for the RW alias (kr=\(kr))", level: .error)
+            return nil
+        }
+        _ = vm_protect(mach_task_self_, rw, vm_size_t(span), 1, VM_PROT_NONE)
+        var curProt: vm_prot_t = 0
+        var maxProt: vm_prot_t = 0
+        for r in regions {
+            var a = rw + (r.base - first.base)
+            let want = a
+            let krR = vm_remap(mach_task_self_, &a, vm_size_t(r.size), 0, 0 /* VM_FLAGS_FIXED */ | VM_FLAGS_OVERWRITE,
+                               mach_task_self_, r.base, 0, &curProt, &maxProt, VM_INHERIT_NONE)
+            let krP = krR == KERN_SUCCESS
+                ? vm_protect(mach_task_self_, a, vm_size_t(r.size), 0, VM_PROT_READ | VM_PROT_WRITE) : krR
+            guard krR == KERN_SUCCESS, krP == KERN_SUCCESS, a == want else {
+                vm_deallocate(mach_task_self_, rw, vm_size_t(span))
+                LogStore.shared.log(String(format: "[pool-split] RW alias at 0x%lx failed for region 0x%lx (remap %d, protect %d)",
+                                           Int(rw), Int(r.base), krR, krP), level: .error)
+                return nil
+            }
         }
         return rw
     }

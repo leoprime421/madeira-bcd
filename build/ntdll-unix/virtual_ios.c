@@ -216,6 +216,11 @@ static size_t jit_pool_offset = 0;
  * it. Without WINE_IOS_JIT_HOLE both bounds stay 0 and every path below is
  * the unsplit one. */
 static size_t ios_jit_hole_off, ios_jit_hole_end;
+/* A second hole above the first (pool-split = low, Forza Horizon 4): the pool is
+ * then three debugger regions -- the run below the executable window, the run
+ * above it, the run above the main thread's stack -- and the holes are the
+ * window and the stack. WINE_IOS_JIT_HOLE="<off>:<end>,<off2>:<end2>". 0 = none. */
+static size_t ios_jit_hole2_off, ios_jit_hole2_end;
 
 /* The offset a head allocation of `size` gets with the bump cursor at `cur`:
  * `cur`, or the end of the hole when [cur, cur + size) would reach into it. */
@@ -250,7 +255,8 @@ static size_t ios_pool_hole_between( size_t total, size_t head, size_t tail,
 }
 
 /* 1 for a pool offset inside the hole (always 0 without a split). */
-#define IOS_POOL_IN_HOLE(o) ((size_t)(o) - ios_jit_hole_off < ios_jit_hole_end - ios_jit_hole_off)
+#define IOS_POOL_IN_HOLE(o) ((size_t)(o) - ios_jit_hole_off < ios_jit_hole_end - ios_jit_hole_off || \
+                             (size_t)(o) - ios_jit_hole2_off < ios_jit_hole2_end - ios_jit_hole2_off)
 
 /* Gives back a refused tail carve's reservation: `added` bytes taken when the
  * counter went to `mine`. Unsplit this is the old fetch-and-sub. Split, a carve
@@ -2647,6 +2653,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
     /* each `continue` below has dropped or replaced entry i: pick again */
     {
         size_t bump_cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size, ios_jit_hole_off, ios_jit_hole_end );
+        bump_cand = ios_pool_hole_head_place( bump_cand, alloc_size, ios_jit_hole2_off, ios_jit_hole2_end );
         bump_ok = bump_cand + alloc_size <= pool_limit && IOS_POOL_IN_REACH(bump_cand);
     }
     while ((i = ios_pool_best_fit( ios_pool_freelist, ios_pool_free_count, alloc_size, now,
@@ -2767,6 +2774,9 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
          * a split `cand` is the cursor itself and this is the old bump. */
         size_t cand = ios_pool_hole_head_place( jit_pool_offset, alloc_size,
                                                 ios_jit_hole_off, ios_jit_hole_end );
+        /* the hole the cursor jumps: the first, else the second (pool-split = low) */
+        size_t jumped_off = cand != jit_pool_offset ? ios_jit_hole_off : ios_jit_hole2_off;
+        cand = ios_pool_hole_head_place( cand, alloc_size, ios_jit_hole2_off, ios_jit_hole2_end );
         if (cand + alloc_size <= pool_limit
             && IOS_POOL_IN_REACH(cand))
         {
@@ -2775,7 +2785,7 @@ static size_t ios_pool_alloc_range_ex( size_t alloc_size, size_t pool_limit,
                 /* The run below the hole stays usable: hand it to the freelist as
                  * a never-used range (no grace, nothing to advise), so the next
                  * image that fits there goes there. */
-                size_t below = ios_jit_hole_off > jit_pool_offset ? ios_jit_hole_off - jit_pool_offset : 0;
+                size_t below = jumped_off > jit_pool_offset ? jumped_off - jit_pool_offset : 0;
                 static int jump_n;
                 if (below >= 0x4000 && ios_pool_free_count < IOS_POOL_FREE_MAX)
                 {
@@ -13508,12 +13518,25 @@ static inline int mprotect_exec( void *base, size_t size, int unix_prot )
                     {
                         char *sep = NULL;
                         unsigned long long h0 = strtoull( hole, &sep, 16 ), h1 = 0;
-                        if (sep && *sep == ':') h1 = strtoull( sep + 1, NULL, 16 );
+                        unsigned long long h2 = 0, h3 = 0;
+                        if (sep && *sep == ':') h1 = strtoull( sep + 1, &sep, 16 );
+                        if (sep && *sep == ',')
+                        {
+                            h2 = strtoull( sep + 1, &sep, 16 );
+                            if (sep && *sep == ':') h3 = strtoull( sep + 1, NULL, 16 );
+                        }
                         if (h0 >= 0x8000 && h1 > h0 && h1 < jit_pool_size &&
                             !(h0 & 0x3fff) && !(h1 & 0x3fff))
                         {
                             ios_jit_hole_off = (size_t)h0;
                             ios_jit_hole_end = (size_t)h1;
+                            if (h2 > h1 && h3 > h2 && h3 < jit_pool_size && !(h2 & 0x3fff) && !(h3 & 0x3fff))
+                            {
+                                ios_jit_hole2_off = (size_t)h2;
+                                ios_jit_hole2_end = (size_t)h3;
+                                dprintf( 2, "[jit-pool] split pool: second hole [0x%llx,0x%llx) (%llu MB) is never handed out either\n",
+                                         h2, h3, (h3 - h2) >> 20 );
+                            }
                             dprintf( 2, "[jit-pool] split pool: RX [%p,%p) + [%p,%p) as one span of 0x%lx; "
                                      "hole [0x%llx,0x%llx) (%llu MB: the main thread's stack) is never "
                                      "handed out -- images 0x%llx below it, FEX code from the top\n",
@@ -25202,7 +25225,9 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
             size_t head_now = jit_pool_offset, tail_now = ios_jit_tail_reserved;
             /* madeira-bcd split pool: a hole still between head and tail is not room */
             size_t hole_now = ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
-                                                     ios_jit_hole_off, ios_jit_hole_end );
+                                                     ios_jit_hole_off, ios_jit_hole_end )
+                            + ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,
+                                                     ios_jit_hole2_off, ios_jit_hole2_end );
             size_t room, cap = TAIL_SMALL;
             if (fh4_cap && fh4_cap[0] == '1') { tail_max = 0x2000000; head_reserve = 160u * 1024 * 1024; }
             room = ios_jit_pool_size_global > head_now + tail_now + hole_now + head_reserve
@@ -25270,23 +25295,27 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
          * mprotect_exec's PE-image copies which take from the start.
          * ios_jit_tail_reserved is the shared file-scope counter so the
          * head allocators can refuse to grow into tail-carved buffers. */
-        size_t reserve_offset, tail_added, tail_skipped = 0;
+        size_t reserve_offset, tail_added, tail_skipped = 0, tail_skip_off = ios_jit_hole_end;
         if (ios_jit_hole_end > ios_jit_hole_off)
         {
             /* madeira-bcd split pool: a carve that would overlap the hole goes
              * directly below it; the span it skips above the hole becomes a free
              * carve once this one is granted. */
-            size_t cur, start;
+            size_t cur, start, above;
             do
             {
                 cur = ios_jit_tail_reserved;
-                start = ios_pool_hole_tail_start( ios_jit_pool_size_global, cur, alloc_size,
+                /* the higher hole first (pool-split = low has two), then the first */
+                above = ios_pool_hole_tail_start( ios_jit_pool_size_global, cur, alloc_size,
+                                                  ios_jit_hole2_off, ios_jit_hole2_end );
+                start = ios_pool_hole_tail_start( ios_jit_pool_size_global, above, alloc_size,
                                                   ios_jit_hole_off, ios_jit_hole_end );
             } while (!__sync_bool_compare_and_swap( &ios_jit_tail_reserved, cur, start + alloc_size ));
             reserve_offset = start;
             tail_added = start + alloc_size - cur;
-            if (start != cur && ios_jit_pool_size_global - cur > ios_jit_hole_end)
-                tail_skipped = ios_jit_pool_size_global - cur - ios_jit_hole_end;
+            tail_skip_off = above != cur ? ios_jit_hole2_end : ios_jit_hole_end;
+            if (start != cur && ios_jit_pool_size_global - cur > tail_skip_off)
+                tail_skipped = ios_jit_pool_size_global - cur - tail_skip_off;
         }
         else
         {
@@ -25425,7 +25454,7 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
              * skipped above the hole is a never-used carve a smaller ask can take. */
             if (tail_skipped >= 0x100000 && ios_tail_carve_n < IOS_TAIL_CARVE_MAX)
             {
-                ios_tail_carves[ios_tail_carve_n].off = ios_jit_hole_end;
+                ios_tail_carves[ios_tail_carve_n].off = tail_skip_off;
                 ios_tail_carves[ios_tail_carve_n].size = tail_skipped & ~(size_t)0x3fff;
                 ios_tail_carves[ios_tail_carve_n].free = 1;
                 ios_tail_carve_n++;

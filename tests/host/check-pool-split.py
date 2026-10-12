@@ -44,7 +44,7 @@ helpers = ''.join(function(native, sig) for sig in (
     'static void ios_pool_tail_unreserve(',
 ))
 macro = native[native.index('#define IOS_POOL_IN_HOLE(o)'):]
-macro = macro[:macro.index('\n') + 1]
+macro = macro[:macro.index(')\n', macro.index('ios_jit_hole2_end')) + 2]
 runs_typedef = native[native.index('typedef int (*ios_pool_region_fn)'):]
 runs_typedef = runs_typedef[:runs_typedef.index(';') + 1] + '\n'
 runs = function(native, 'static int ios_pool_execable_runs(')
@@ -58,11 +58,11 @@ assert 'ios_pool_freelist[ios_pool_free_count].off = jit_pool_offset;' in bump
 warmer = function(native, 'static void *ios_pool_warmer_thread(')
 assert warmer.count('if (IOS_POOL_IN_HOLE(o)) continue;') == 4, 'all four warmer loops skip the hole'
 
-tail = native[native.index('size_t reserve_offset, tail_added, tail_skipped = 0;'):][:12000]
+tail = native[native.index('size_t reserve_offset, tail_added, tail_skipped = 0'):][:12000]
 assert 'ios_pool_hole_tail_start( ios_jit_pool_size_global, cur, alloc_size,' in tail
 assert tail.count('ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offset + alloc_size, tail_added,') == 2
 assert '__sync_fetch_and_sub(&ios_jit_tail_reserved' not in tail, 'every rollback goes through ios_pool_tail_unreserve'
-assert 'ios_tail_carves[ios_tail_carve_n].off = ios_jit_hole_end;' in tail
+assert 'ios_tail_carves[ios_tail_carve_n].off = tail_skip_off;' in tail
 
 cap = native[native.index('enum { TAIL_SMALL = 0x1000000, TAIL_MAX = 0x8000000'):][:2000]
 assert 'ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,' in cap
@@ -84,8 +84,10 @@ assert 'if poolSize >= requestedPoolSize {' in swift, 'no split when the pool go
 assert 'poolHole = holeEnd > poolSize ? (off: poolSize, end: holeEnd) : nil' in swift
 assert 'VM_FLAGS_OVERWRITE' in swift and 'rw + (rxB - rxA)' in swift, 'one RW alias, one RX->RW distance'
 assert 'gapHitsWindow' in swift, 'the hole may never hold the executable window'
-hole_env = content[content.index('if let hole = StikJITHelper.poolHole {'):][:300]
-assert 'setenv("WINE_IOS_JIT_HOLE", String(format: "%lx:%lx", hole.off, hole.end), 1)' in hole_env
+hole_env = content[content.index('if let hole = StikJITHelper.poolHole {'):][:500]
+assert 'var spec = String(format: "%lx:%lx", hole.off, hole.end)' in hole_env
+assert 'spec += String(format: ",%lx:%lx", hole2.off, hole2.end)' in hole_env
+assert 'setenv("WINE_IOS_JIT_HOLE", spec, 1)' in hole_env
 assert 'unsetenv("WINE_IOS_JIT_HOLE")' in hole_env
 print('PASS: the app splits only on request and exports WINE_IOS_JIT_HOLE only for a split pool')
 
@@ -95,6 +97,7 @@ harness = r'''
 #include <stdint.h>
 #include <string.h>
 static size_t ios_jit_hole_off, ios_jit_hole_end;
+static size_t ios_jit_hole2_off, ios_jit_hole2_end;
 ''' + macro + helpers + runs_typedef + runs + r'''
 #define MB ((size_t)1 << 20)
 #define FAIL(...) do { fprintf(stderr, __VA_ARGS__); exit(1); } while (0)
@@ -112,6 +115,8 @@ static void check_new( size_t off, size_t size )
     if (off + size > total) FAIL("range 0x%zx+0x%zx past the pool end\n", off, size);
     if (ios_jit_hole_end > ios_jit_hole_off && off < ios_jit_hole_end && off + size > ios_jit_hole_off)
         FAIL("range 0x%zx+0x%zx overlaps the hole [0x%zx,0x%zx)\n", off, size, ios_jit_hole_off, ios_jit_hole_end);
+    if (ios_jit_hole2_end > ios_jit_hole2_off && off < ios_jit_hole2_end && off + size > ios_jit_hole2_off)
+        FAIL("range 0x%zx+0x%zx overlaps the second hole [0x%zx,0x%zx)\n", off, size, ios_jit_hole2_off, ios_jit_hole2_end);
     for (i = 0; i < nlive; i++)
         if (live[i].live && off < live[i].off + live[i].size && off + size > live[i].off)
             FAIL("range 0x%zx+0x%zx overlaps live 0x%zx+0x%zx\n", off, size, live[i].off, live[i].size);
@@ -122,6 +127,7 @@ static int head_alloc( size_t size )   /* ios_pool_alloc_range_ex's bump */
 {
     size_t limit = total - tail_resv;
     size_t cand = ios_pool_hole_head_place( head, size, ios_jit_hole_off, ios_jit_hole_end );
+    cand = ios_pool_hole_head_place( cand, size, ios_jit_hole2_off, ios_jit_hole2_end );
     if (cand + size > limit) return 0;
     check_new( cand, size );
     if (cand != head) jumps++;
@@ -133,7 +139,9 @@ static int tail_alloc( size_t size )   /* NtAllocateVirtualMemoryEx's EC_CODE ca
 {
     int split = ios_jit_hole_end > ios_jit_hole_off;
     size_t cur = tail_resv, start, added, off;
-    if (split) start = ios_pool_hole_tail_start( total, cur, size, ios_jit_hole_off, ios_jit_hole_end );
+    if (split) start = ios_pool_hole_tail_start( total, ios_pool_hole_tail_start( total, cur, size, ios_jit_hole2_off,
+                                                                                ios_jit_hole2_end ),
+                                                 size, ios_jit_hole_off, ios_jit_hole_end );
     else start = cur;
     tail_resv = start + size;
     added = start + size - cur;
@@ -256,6 +264,21 @@ int main( void )
     model( c, 64 * MB, 64 * MB + 0x4000, 100, &heads, &tails );
     model( c, c - 0x8000 - 0x4000, c - 0x8000, 100, &heads, &tails );
     printf("PASS: a 16 KB hole near either end is never handed out\n");
+
+    /* pool-split = low (FH4, 2026-10-12): C 336 MB | window 132 MB | A 560 MB | stack 22 MB | B 256 MB */
+    {
+        size_t h0 = 336 * MB, h1 = h0 + 132 * MB, h2 = h1 + 560 * MB, h3 = h2 + 22 * MB, end = h3 + 256 * MB;
+        ios_jit_hole_off = h0; ios_jit_hole_end = h1; ios_jit_hole2_off = h2; ios_jit_hole2_end = h3;
+        if (!IOS_POOL_IN_HOLE(h0) || !IOS_POOL_IN_HOLE(h2) || !IOS_POOL_IN_HOLE(h3 - 0x4000) || IOS_POOL_IN_HOLE(h1)
+            || IOS_POOL_IN_HOLE(h3) || IOS_POOL_IN_HOLE(h2 - 0x4000))
+            FAIL("IN_HOLE bounds with two holes\n");
+        jumps = below = 0;
+        model( end, h0, h1, 300, &heads, &tails );
+        if (!jumps || !below) FAIL("the two-hole model never jumped (%lu) or carved below (%lu)\n", jumps, below);
+        printf("PASS: two-hole model, 300 runs: %zu MB head + %zu MB tail, none in either hole, no overlap\n",
+               heads >> 20, tails >> 20);
+        ios_jit_hole2_off = ios_jit_hole2_end = 0;
+    }
 
     /* POISONED salvage: off 0x110ac000 size 0x25c000, one RW page at +0x1e0000 (16:19 log) */
     nmap = 3;

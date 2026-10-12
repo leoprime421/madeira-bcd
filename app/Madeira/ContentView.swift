@@ -3211,7 +3211,9 @@ struct ContentView: View {
                 // madeira-bcd split pool (pool-split = 1): the pool offsets between its two
                 // debugger regions, which ntdll never hands out (StikJITHelper.poolHole).
                 if let hole = StikJITHelper.poolHole {
-                    setenv("WINE_IOS_JIT_HOLE", String(format: "%lx:%lx", hole.off, hole.end), 1)
+                    var spec = String(format: "%lx:%lx", hole.off, hole.end)
+                    if let hole2 = StikJITHelper.poolHole2 { spec += String(format: ",%lx:%lx", hole2.off, hole2.end) }
+                    setenv("WINE_IOS_JIT_HOLE", spec, 1)
                 } else {
                     unsetenv("WINE_IOS_JIT_HOLE")
                 }
