@@ -78,7 +78,13 @@ static kern_return_t mach_vm_write(int task, mach_vm_address_t addr, vm_offset_t
     memcpy((void *)addr, (void *)data, size);
     return KERN_SUCCESS;
 }
+/* Match the Darwin declaration on Linux too, so a name collision is caught
+ * locally instead of only by the macOS runner. */
+extern kern_return_t host_page_size(mach_port_t, size_t *);
 #endif
+/* The extracted Wine helpers use this name for a variable; Mach reserves it
+ * for a function. Keep the alias after the system headers. */
+#define host_page_size dc_test_page_size
 static size_t host_page_size, host_page_mask;
 static void *ios_jit_rx_base_global, *ios_jit_rw_base_global;
 static size_t ios_jit_pool_size_global;
