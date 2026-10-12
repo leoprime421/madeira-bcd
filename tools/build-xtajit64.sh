@@ -156,6 +156,9 @@ python3 "$R/tools/patch-fex-ios-alias-capacity.py" "$R/FEX/Source/Windows/ARM64E
 # FH4's sign-in: ~265 emulated threads filled the 16 GB FEX arena; the decoder's
 # 8 MB per-thread buffer becomes 1 MB (blocks already stop at MaxInst = 5000).
 python3 "$R/tools/patch-fex-ios-frontend-buffer.py" "$R/FEX/FEXCore/Source/Interface/Core/Frontend.h"
+# Same arena: the call-ret stack's 16 MB reservation holds a 4 MB guard window;
+# 8 MB per thread keeps the window whole (offsets pinned) and frees ~2 GB.
+python3 "$R/tools/patch-fex-ios-callret-8mb.py" "$R/FEX"
 # GTA V build 25: AllocWatch::Clear() used C++ TLS on ARM64EC and generated
 # a read through TEB->ThreadLocalStoragePointer; that pointer is NULL on this
 # early FEX thread. Use TPIDRRO_EL0 host-thread identity instead.
