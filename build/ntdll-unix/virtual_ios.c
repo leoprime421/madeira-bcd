@@ -23266,11 +23266,12 @@ static int ios_fh4_jumbo_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG pr
  * for V8's 4 GB pointer cage, then frees it and reserves the 4 GB there
  * (jumbo#3/#4, 2026-10-11 22:27). Up to three run at once at sign-in (page,
  * spare, login.live.com). Each gets a 4 GB-aligned 4 GB reported as 8 GB -- V8
- * rounds the base up to itself, releases it and reserves the same 4 GB: first
- * the lower half of the boot cage holdback, then its upper half (free up to
- * 0x7400000000 once ios_fh4_jumbo_try moved the game's 18 GB), then any free
- * aligned slot. The half not yet given stays held so furniture cannot take it;
- * a half that fails (the game's 18 GB still at 0x73ffff0000) is left free. */
+ * rounds the base up to itself, releases it and reserves the same 4 GB.
+ * Order: the lower half of the boot cage holdback, then 0x7b00000000 above the
+ * furniture window, then the holdback's upper half (held until then so furniture
+ * cannot take it), then any free aligned slot. Taking the upper half second left
+ * the furniture window full and the GPU child died on bad_alloc (2026-10-12
+ * 12:21, with a 2 GB memory pool in the window; the app skips it for FH4). */
 static int ios_fh4_cage_hi_held;
 
 static int ios_fh4_cage_try( void **pick, SIZE_T *sz, SIZE_T asked, ULONG type, ULONG protect )
@@ -23285,6 +23286,7 @@ static int ios_fh4_cage_try( void **pick, SIZE_T *sz, SIZE_T asked, ULONG type, 
         ios_fh4_cage_hi_held = 1;   /* [base + 4 GB, base + 8 GB - 64 KB) stays mapped */
         if (ios_jumbo_try_at( IOS_CAGE_BASE, four, type, protect, pick )) goto got;
     }
+    if (ios_jumbo_try_at( 0x7b00000000ULL, four, type, protect, pick )) goto got;
     if (ios_fh4_cage_hi_held)
     {
         munmap( (void *)(uintptr_t)(IOS_CAGE_BASE + four), IOS_CAGE_REAL_SIZE - four );

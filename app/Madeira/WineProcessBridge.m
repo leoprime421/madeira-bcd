@@ -1356,6 +1356,14 @@ static void *wine_process_thread(void *arg) {
                         fprintf(stderr, "[swap] ml1077 app: backing file %s, cap %ld MB\n", swapPath.UTF8String, capMB);
                         /* ml1150: memory pool, the tier's first stage (MemoryPool.m). */
                         long poolMB = (long)madeira_cfg_int("mempool-mb", 0);   /* madeira.cfg mempool-mb = N */
+                        /* FH4: the pool lives in the guest window, which its sign-in fills
+                         * with CEF children and their 4 GB V8 cages; with 2 GB of pool the
+                         * GPU child ran out of address space (2026-10-12 12:21). */
+                        const char *fh4_cap = getenv("MADEIRA_FH4_JIT_TAIL_CAP");
+                        if (poolMB >= 512 && fh4_cap && fh4_cap[0] == '1') {
+                            fprintf(stderr, "[mempool] FH4: memory pool (%ld MB) skipped, its address space goes to the sign-in\n", poolMB);
+                            poolMB = 0;
+                        }
                         if (poolMB >= 512) {
                             extern long MadeiraMemoryPoolStart(long megabytes);
                             long got = MadeiraMemoryPoolStart(poolMB);
