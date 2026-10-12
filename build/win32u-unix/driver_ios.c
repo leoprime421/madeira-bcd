@@ -712,6 +712,63 @@ static BOOL winios_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *sur
     return TRUE;
 }
 
+/* Child windows: win32u hands their rects relative to the parent's client
+ * area, but every compositor layer is a sibling in desktop space. FH4's
+ * Xbox login (2026-10-11 22:27) showed only its white "LOADING..." parent:
+ * the CEF child it renders into (Metal swapchain) sat at desktop (0,0),
+ * under the game window. */
+static void winios_child_rects_to_screen( HWND hwnd, RECT *v, RECT *c )
+{
+    struct window_rects pr;
+    HWND parent;
+
+    if (!(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD)) return;
+    parent = NtUserGetAncestor( hwnd, GA_PARENT );
+    if (!parent || parent == get_desktop_window()) return;
+    if (!get_window_rects( parent, COORDS_SCREEN, &pr, get_thread_dpi() )) return;
+    OffsetRect( v, pr.client.left, pr.client.top );
+    OffsetRect( c, pr.client.left, pr.client.top );
+}
+
+/* A moved window does not move its children's layers: re-send their frames. */
+static void winios_frame_descendants( HWND parent, int depth )
+{
+    HWND *list;
+    int i;
+
+    if (depth > 8 || !(list = list_window_children( parent ))) return;
+    for (i = 0; list[i] && i < 256; i++)
+    {
+        struct window_rects r;
+        DWORD style = get_window_long( list[i], GWL_STYLE );
+
+        if (!(style & WS_CHILD) || !get_window_rects( list[i], COORDS_SCREEN, &r, get_thread_dpi() )) continue;
+        winios_window_frame( list[i], r.visible.left, r.visible.top, r.visible.right - r.visible.left,
+                             r.visible.bottom - r.visible.top, (style & WS_VISIBLE) && !IsRectEmpty( &r.visible ),
+                             r.client.left, r.client.top, r.client.right - r.client.left,
+                             r.client.bottom - r.client.top );
+        winios_frame_descendants( list[i], depth + 1 );
+    }
+    free( list );
+}
+
+/* Z-order list for the compositor, topmost first: each top-level window is
+ * preceded by its descendants (deepest first), so child layers stack just
+ * above their own window instead of at zPosition 0 under everything. */
+static void winios_zorder_append( HWND hwnd, HWND *out, int *n, int max, int depth )
+{
+    HWND *kids;
+    int i;
+
+    if (depth <= 8 && (get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE)
+        && (kids = list_window_children( hwnd )))
+    {
+        for (i = 0; kids[i] && *n < max; i++) winios_zorder_append( kids[i], out, n, max, depth + 1 );
+        free( kids );
+    }
+    if (*n < max) out[(*n)++] = hwnd;
+}
+
 /* pWindowPosChanged wrapper: dereference window_rects HERE (Winios.m
  * cannot include wine headers) and forward plain ints for the layer
  * frame; chain to the Winios.m hook afterwards. */
@@ -724,11 +781,13 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         || (winios_game_windows() && !(get_window_long( hwnd, GWL_STYLE ) & WS_CHILD)
             && NtUserGetAncestor( hwnd, GA_PARENT ) == get_desktop_window())))
     {
-        const RECT *v = &new_rects->visible;
-        const RECT *c = &new_rects->client;
+        RECT vr = new_rects->visible, cr = new_rects->client;
+        const RECT *v = &vr, *c = &cr;
         int visible = !IsRectEmpty( v ) && !(swp_flags & SWP_HIDEWINDOW);
+        if (winios_desktop_mode()) winios_child_rects_to_screen( hwnd, &vr, &cr );
         winios_window_frame( hwnd, v->left, v->top, v->right - v->left, v->bottom - v->top, visible,
                              c->left, c->top, c->right - c->left, c->bottom - c->top );
+        if (winios_desktop_mode() && !(swp_flags & SWP_NOMOVE)) winios_frame_descendants( hwnd, 0 );
         if (visible && surface && winios_game_windows()) winios_note_dialog_thread( hwnd, v );
         /* The compositor stacked layers by creation order, so a newer window stayed
          * on top whatever its Win32 z-order: FH4's 1920x1080 black companion window,
@@ -737,11 +796,16 @@ static void winios_drv_window_pos_changed( HWND hwnd, HWND insert_after, HWND ow
         if (winios_window_zorder && winios_desktop_mode())
         {
             HWND *list = list_window_children( get_desktop_window() );
-            int n = 0;
+            HWND *order;
+            int i, n = 0;
             if (list)
             {
-                while (list[n]) n++;
-                winios_window_zorder( list, n );
+                if ((order = malloc( 4096 * sizeof(*order) )))
+                {
+                    for (i = 0; list[i] && n < 4096; i++) winios_zorder_append( list[i], order, &n, 4096, 0 );
+                    winios_window_zorder( order, n );
+                    free( order );
+                }
                 free( list );
             }
         }
