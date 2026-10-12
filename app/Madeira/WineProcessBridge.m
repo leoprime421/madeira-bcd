@@ -1154,6 +1154,7 @@ static void *wine_process_thread(void *arg) {
         unsetenv("MADEIRA_FEX_NO_RCPC");
         unsetenv("MADEIRA_FEX_FH4_SPIN_FIX");
         unsetenv("MADEIRA_FH4_JIT_TAIL_CAP");
+        unsetenv("MADEIRA_CHILD_ARGS");   /* re-exported below from madeira.cfg's env. lines */
         unsetenv("MADEIRA_EXECREQ_LEAVE");
         unsetenv("MADEIRA_REVOCATION_SOFTFAIL");
         /* Madeira Dock: Valve's client starts Forza Horizon 4 (app 1293830) itself, so
@@ -1172,6 +1173,11 @@ static void *wine_process_thread(void *arg) {
             setenv("MADEIRA_FEX_FH4_SPIN_FIX", "1", 1);
             /* ntdll: smaller FEX code buffers so ForzaWebHelper's children fit the pool. */
             setenv("MADEIRA_FH4_JIT_TAIL_CAP", "1", 1);
+            /* Fewer CEF threads: each emulated thread holds ~60 MB of the 16 GB FEX
+             * arena, which ~270 threads filled at sign-in (2026-10-12 14:51; the
+             * login renderer's next thread could not start). An env.MADEIRA_CHILD_ARGS
+             * line in madeira.cfg is exported after this and wins. */
+            setenv("MADEIRA_CHILD_ARGS", "ForzaWebHelper.exe --num-raster-threads=1 --disable-gpu-watchdog", 1);
             /* Wine's ARM64EC NtProtectVirtualMemory executable-request path
              * now clears callback state in the source rebuilt by CI. Do not
              * enable the old layout-dependent binary patch here. */
