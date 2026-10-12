@@ -23213,6 +23213,70 @@ static int ios_cage_8g_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG prot
     return 1;
 }
 
+/* Forza Horizon 4 (MADEIRA_FH4_JIT_TAIL_CAP=1, set by the app): the game
+ * reserves 18 GB and then 8.2 GB, unhinted. The default search put the 18 GB at
+ * 0x73ffff0000, 64 KB into the [0x7300000000, 0x7400000000) slot, so that slot
+ * could never hold a CEF renderer's 4 GB V8 cage; the sign-in renderer then had
+ * none and exited with code 3 (2026-10-12 10:51). Put the 18 GB at
+ * 0x7400000000 and the 8.2 GB right after it. Not for ForzaWebHelper.exe. */
+static int ios_fh4_jumbo_try( void **ret, SIZE_T *size_ptr, ULONG type, ULONG protect )
+{
+    const char *e = getenv( "MADEIRA_FH4_JIT_TAIL_CAP" );
+    uintptr_t at;
+
+    if (!e || e[0] != '1' || *ret || !(type & MEM_RESERVE) || (type & MEM_COMMIT)) return 0;
+    if (*size_ptr == 0x480000000ULL) at = 0x7400000000ULL;
+    else if (*size_ptr == 0x200c00000ULL) at = 0x7880000000ULL;
+    else return 0;
+    if (ios_fh4_current_is_webhelper()) return 0;
+    if (!ios_jumbo_fit_place( ret, size_ptr, type, protect, at, *size_ptr ))
+    {
+        dprintf( 2, "[fh4-jumbo] 0x%lx reserve at %#lx refused -- default placement\n",
+                 (unsigned long)*size_ptr, (unsigned long)at );
+        return 0;
+    }
+    dprintf( 2, "[fh4-jumbo] 0x%lx reserve placed at %#lx\n", (unsigned long)*size_ptr, (unsigned long)at );
+    return 1;
+}
+
+/* Forza Horizon 4's CEF renderers: each asks 8 GB only to find a 4 GB boundary
+ * for V8's 4 GB pointer cage, then frees it and reserves the 4 GB there
+ * (jumbo#3/#4, 2026-10-11 22:27). Up to three run at once at sign-in (page,
+ * spare, login.live.com). Each gets a 4 GB-aligned 4 GB reported as 8 GB -- V8
+ * rounds the base up to itself, releases it and reserves the same 4 GB: first
+ * the lower half of the boot cage holdback, then its upper half (free up to
+ * 0x7400000000 once ios_fh4_jumbo_try moved the game's 18 GB), then any free
+ * aligned slot. The half not yet given stays held so furniture cannot take it;
+ * a half that fails (the game's 18 GB still at 0x73ffff0000) is left free. */
+static int ios_fh4_cage_hi_held;
+
+static int ios_fh4_cage_try( void **pick, SIZE_T *sz, SIZE_T asked, ULONG type, ULONG protect )
+{
+    const SIZE_T four = 0x100000000ULL;
+    uintptr_t x;
+
+    if (ios_cage_holdback_live)
+    {
+        munmap( (void *)(uintptr_t)IOS_CAGE_BASE, four );
+        ios_cage_holdback_live = 0;
+        ios_fh4_cage_hi_held = 1;   /* [base + 4 GB, base + 8 GB - 64 KB) stays mapped */
+        if (ios_jumbo_try_at( IOS_CAGE_BASE, four, type, protect, pick )) goto got;
+    }
+    if (ios_fh4_cage_hi_held)
+    {
+        munmap( (void *)(uintptr_t)(IOS_CAGE_BASE + four), IOS_CAGE_REAL_SIZE - four );
+        ios_fh4_cage_hi_held = 0;
+        if (ios_jumbo_try_at( IOS_CAGE_BASE + four, four, type, protect, pick )) goto got;
+    }
+    for (x = 0x7b00000000ULL; x >= 0x7000000000ULL; x -= four)
+        if (ios_jumbo_try_at( x, four, type, protect, pick )) goto got;
+    return 0;
+got:
+    *sz = asked;
+    dprintf( 2, "[cage] fh4 renderer: 4GB-aligned 4GB at %p reported as 8GB\n", *pick );
+    return 1;
+}
+
 /* Layout 2: is this SocialClubHelper.exe NtAllocateVirtualMemoryEx call V8's
  * 8 GB sandbox step? (wall 3 of the agent-sc-next-walls report.) V8 allocates
  * through VirtualAlloc2 whenever kernelbase exports it (platform-win32.cc
@@ -23552,7 +23616,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
-        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_jumbo_fit_try( ret, size_ptr, type, protect )))
+        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_fh4_jumbo_try( ret, size_ptr, type, protect ) ||
+                         ios_jumbo_fit_try( ret, size_ptr, type, protect )))
         {
             ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
             return STATUS_SUCCESS;
@@ -24165,26 +24230,12 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                  * must come back 8GB-ALIGNED, or the guest frees it and dies in
                  * a 16GB overreserve retry loop — serve it from the boot
                  * holdback, the only aligned stretch left. See IOS_CAGE_BASE. */
+                /* Forza Horizon 4's CEF renderers: see ios_fh4_cage_try. */
+                if (st2 && *size_ptr == 0x200000000ULL && ios_fh4_current_is_webhelper() &&
+                    ios_fh4_cage_try( &pick, &sz, *size_ptr, type, protect ))
+                    st2 = 0;
                 if (st2 && ios_cage_holdback_live && *size_ptr == 0x200000000ULL)
                     st2 = ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "ml433" );
-                /* Forza Horizon 4's CEF: each renderer asks 8 GB only to find a 4 GB
-                 * boundary for V8's 4 GB pointer cage, then frees it and reserves
-                 * the 4 GB there (jumbo#3/#4, 2026-10-11 22:27). The boot holdback
-                 * serves one renderer; the next one got nothing and wrote through
-                 * a NULL cage base (addr 0x3404, 2026-10-12 09:08). Give it a free
-                 * 4 GB-aligned 4 GB, reported as 8 GB: V8 rounds the base up to
-                 * itself, releases it and reserves the same 4 GB. */
-                if (st2 && *size_ptr == 0x200000000ULL && ios_fh4_current_is_webhelper())
-                {
-                    uintptr_t x;
-                    for (x = 0x7b00000000ULL; x >= 0x7000000000ULL && st2; x -= 0x100000000ULL)
-                        if (ios_jumbo_try_at( x, 0x100000000ULL, type, protect, &pick ))
-                        {
-                            sz = *size_ptr;
-                            st2 = 0;
-                            dprintf( 2, "[cage] fh4 renderer: 4GB-aligned 4GB at %p reported as 8GB\n", pick );
-                        }
-                }
                 /* ml434 (#72 layer 2): the 4GB ask is the cppgc caged heap and
                  * must come back 4GB-ALIGNED. By the time it arrives (~69s) the
                  * furniture window is 89% full (ml433: free=1701MB, maxhole
@@ -25434,7 +25485,8 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
         void  *jumbo_hint = *ret;
         size_t jumbo_size = *size_ptr;
         int    is_jumbo   = (jumbo_size >= 0x40000000 && (type & MEM_RESERVE));
-        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_jumbo_fit_try( ret, size_ptr, type, protect )))
+        if (is_jumbo && (ios_cage_8g_try( ret, size_ptr, type, protect ) || ios_fh4_jumbo_try( ret, size_ptr, type, protect ) ||
+                         ios_jumbo_fit_try( ret, size_ptr, type, protect )))
         {
             ios_jumbo_census( jumbo_hint, jumbo_size, *ret, 0 );
             return STATUS_SUCCESS;
