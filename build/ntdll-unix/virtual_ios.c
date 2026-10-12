@@ -142,8 +142,12 @@ WINE_DECLARE_DEBUG_CHANNEL(virtual_ranges);
 /* 512: desktop mode holds the session's full aarch64 image set PLUS every
  * pseudo-process child's x64/EC set in one table. 64 overflowed at exactly
  * the 65th image (Thumper under desktop, 2026-07-06): concrt140 copied but
- * never registered → raw-VA DllMain call → unfixable exec-fault loop. */
-#define IOS_JIT_MAX_MAPPINGS 512
+ * never registered → raw-VA DllMain call → unfixable exec-fault loop.
+ * 1024: FH4's Xbox login (2026-10-11 23:07) has the game plus six CEF
+ * children, 579 image copies; at 512 the renderers' cryptui/wevtapi/esent
+ * were copied again on every attempt and never registered, and libcef's
+ * imports failed (c0000135). Matches FEX's 1024-entry alias table. */
+#define IOS_JIT_MAX_MAPPINGS 1024
 struct ios_jit_mapping {
     void *pe_base;      /* Original PE image base address (unix mapping) */
     void *jit_base;     /* JIT pool RX address */
