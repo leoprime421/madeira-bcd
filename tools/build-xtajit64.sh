@@ -153,6 +153,9 @@ python3 "$R/tools/patch-fex-ios-codebuffer-guard.py" "$R/FEX"
 # (105, 182, 255) and the 256-entry alias table was full before the third one
 # finished loading its runtime.
 python3 "$R/tools/patch-fex-ios-alias-capacity.py" "$R/FEX/Source/Windows/ARM64EC/IosJitAlias.cpp"
+# FH4's sign-in: ~265 emulated threads filled the 16 GB FEX arena; the decoder's
+# 8 MB per-thread buffer becomes 1 MB (blocks already stop at MaxInst = 5000).
+python3 "$R/tools/patch-fex-ios-frontend-buffer.py" "$R/FEX/FEXCore/Source/Interface/Core/Frontend.h"
 # GTA V build 25: AllocWatch::Clear() used C++ TLS on ARM64EC and generated
 # a read through TEB->ThreadLocalStoragePointer; that pointer is NULL on this
 # early FEX thread. Use TPIDRRO_EL0 host-thread identity instead.
