@@ -71,9 +71,12 @@ enum MadeiraConfig {
          * pool shrank to 544 MB and ForzaWebHelper's gpu-process died on
          * libcef.dll (STATUS_NO_MEMORY), so the login stayed blank. The split pool
          * adds the run above the main thread's stack; an explicit value still wins. */
+        /* 2026-10-12 09:57: the 864 MB split pool still ran dry at sign-in, so the
+         * default takes the larger run below the executable window ("low",
+         * StikJITHelper.takeLowRegion), falling back to "1" when it cannot. */
         if key == "pool-split" {
             let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
-            return (trimmed?.isEmpty ?? true) ? "1" : trimmed
+            return (trimmed?.isEmpty ?? true) ? "low" : trimmed
         }
 
         /* FH4 Build 124: ForzaWebHelper/libcef is spawned late, after the game

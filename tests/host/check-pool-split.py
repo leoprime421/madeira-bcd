@@ -64,9 +64,9 @@ assert tail.count('ios_pool_tail_unreserve( &ios_jit_tail_reserved, reserve_offs
 assert '__sync_fetch_and_sub(&ios_jit_tail_reserved' not in tail, 'every rollback goes through ios_pool_tail_unreserve'
 assert 'ios_tail_carves[ios_tail_carve_n].off = ios_jit_hole_end;' in tail
 
-cap = native[native.index('enum { TAIL_SMALL = 0x1000000, TAIL_MAX = 0x8000000'):][:900]
+cap = native[native.index('enum { TAIL_SMALL = 0x1000000, TAIL_MAX = 0x8000000'):][:2000]
 assert 'ios_pool_hole_between( ios_jit_pool_size_global, head_now, tail_now,' in cap
-assert 'head_now - tail_now - hole_now - HEAD_RESERVE' in cap
+assert 'head_now - tail_now - hole_now - head_reserve' in cap
 
 init = native[native.index('const char *hole = getenv( "WINE_IOS_JIT_HOLE" );'):][:1400]
 assert 'h1 < jit_pool_size' in init and '!(h0 & 0x3fff) && !(h1 & 0x3fff)' in init

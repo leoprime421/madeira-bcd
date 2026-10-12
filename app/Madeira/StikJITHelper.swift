@@ -745,7 +745,43 @@ enum StikJITHelper {
         let splitValue = (splitOverride ?? (launchName == "forzahorizon4.exe" ? "1" : ""))
             .trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         poolHole = nil
-        if ["1", "on", "true", "yes"].contains(splitValue) {
+        // pool-split = low (FH4's default, MadeiraConfig): the run BELOW the
+        // executable window joins the pool instead of the run above the stack.
+        // FH4's sign-in (2026-10-12 09:57) ran the 864MB split pool dry: the
+        // login.live.com renderer could not even load its ntdll and the game died
+        // in libcef. The run below is 450MB+ in every log, the one above 256MB.
+        // The window lies in the hole, so it is no longer offered to ntdll.
+        if splitValue == "low", poolSize < requestedPoolSize,
+           let low = takeLowRegion(below: rxAddrV, want: requestedPoolSize - poolSize,
+                                   exeWindow: (exeWinBase, exeWinSize)) {
+            if let rw = mapSplitAlias(rxA: low.base, sizeA: low.size, rxB: rxAddrV, sizeB: vm_address_t(poolSize)) {
+                let span = Int(rxAddrV - low.base) + poolSize
+                let holeEnd = Int(rxAddrV - low.base)
+                let rwPtr = UnsafeMutableRawPointer(bitPattern: rw)!
+                unsetenv("WINE_IOS_EXE_WINDOW")
+                LogStore.shared.log("ml977: RX=[\(String(format: "%p", Int(low.base))),\(String(format: "%p", Int(low.base) + span))) "
+                    + "RW=[\(String(format: "%p", Int(rw))),\(String(format: "%p", Int(rw) + span))) "
+                    + "offset=0x\(String(Int(rw) - Int(low.base), radix: 16)) windowHeld=\(windowHeld) rwOverlap=false",
+                    level: .success)
+                let exemptA = jit_make_region_no_footprint(rwPtr, Int(low.size), "pool-RW-alias-low")
+                let exemptB = jit_make_region_no_footprint(rwPtr + holeEnd, poolSize, "pool-RW-alias")
+                LogStore.shared.log("[no-footprint] pool applied=\(exemptA && exemptB)", level: exemptA && exemptB ? .success : .error)
+                poolHole = (off: Int(low.size), end: holeEnd)
+                LogStore.shared.log(String(format: "[pool-split] JIT pool = RX [0x%lx,0x%lx) %luMB below the executable window + "
+                    + "[0x%lx,0x%lx) %luMB as one %luMB span; pool offsets [0x%lx,0x%lx) (%luMB, the window) are never handed out",
+                    Int(low.base), Int(low.base + low.size), Int(low.size >> 20),
+                    Int(rxAddrV), Int(rxAddrV) + poolSize, poolSize >> 20,
+                    (Int(low.size) + poolSize) >> 20, Int(low.size), holeEnd, (holeEnd - Int(low.size)) >> 20),
+                    level: .success)
+                LogStore.shared.log("JIT pool ready (debugger still attached).", level: .success)
+                poolTaken = true
+                return (rx: UnsafeMutableRawPointer(bitPattern: low.base)!, rw: rwPtr, size: span)
+            }
+            let dkr = vm_deallocate(mach_task_self_, low.base, vm_size_t(low.size))
+            LogStore.shared.log("[pool-split] no RW alias for the low split pool — low region released (kr=\(dkr)); "
+                + "trying the run above the stack", level: .error)
+        }
+        if ["1", "on", "true", "yes", "low"].contains(splitValue) {
             if poolSize >= requestedPoolSize {
                 LogStore.shared.log("[pool-split] the pool got its full \(poolSize >> 20)MB in one region — no split needed")
             } else if let second = takeSecondRegion(above: rxAddrV + vm_address_t(poolSize), want: requestedPoolSize - poolSize,
@@ -973,6 +1009,70 @@ enum StikJITHelper {
         LogStore.shared.log(String(format: "[pool-split] second debugger region 0x%lx+%luMB (free runs above the pool: %@); "
             + "between the regions: %luKB, %luKB of it free and now held PROT_NONE",
             Int(b), Int(size >> 20), desc, Int(b - aEnd) >> 10, held >> 10))
+        return (b, size)
+    }
+
+    /// madeira-bcd split pool, `pool-split = low`: a debugger region in the largest
+    /// free run between 0x119000000 and the executable window, below the pool at
+    /// `aBase`, at most `want` (rounded up to 16MB) and at least 256MB. Lower runs
+    /// that could take it are plugged for the request (first-fit); the free gaps
+    /// between it and the pool -- the window's surroundings -- get PROT_NONE
+    /// placeholders. Returns nil, holding nothing, when it does not work out.
+    private static func takeLowRegion(below aBase: vm_address_t, want: Int,
+                                      exeWindow: (base: vm_address_t, size: vm_address_t))
+        -> (base: vm_address_t, size: vm_address_t)? {
+        let floor: vm_address_t = 0x119000000
+        let mb16: vm_address_t = 16 << 20
+        guard aBase >= exeWindow.base + exeWindow.size else {
+            LogStore.shared.log(String(format: "[pool-split] low: the pool at 0x%lx is not above the executable window", Int(aBase)),
+                                level: .error)
+            return nil
+        }
+        let runs = freeRuns(floor, exeWindow.base, minSize: 256 << 20)
+        let desc = runs.map { String(format: "0x%lx+%luMB", Int($0.base), Int($0.size >> 20)) }.joined(separator: " ")
+        guard let best = runs.max(by: { $0.size < $1.size }) else {
+            LogStore.shared.log("[pool-split] low: no free run of 256MB or more below the executable window", level: .error)
+            return nil
+        }
+        let wanted = (vm_address_t(want) + mb16 - 1) & ~(mb16 - 1)
+        let size = min(best.size & ~(mb16 - 1), wanted)
+        guard size >= 256 << 20 else {
+            LogStore.shared.log("[pool-split] low: free runs below the window: \(desc) — none fits 256MB", level: .error)
+            return nil
+        }
+        var plugs: [(vm_address_t, vm_size_t)] = []
+        for h in freeRuns(0x100000000, best.base, minSize: size) {
+            var a = h.base
+            if vm_allocate(mach_task_self_, &a, vm_size_t(h.size), 0 /* VM_FLAGS_FIXED */) == KERN_SUCCESS {
+                if a == h.base { plugs.append((a, vm_size_t(h.size))) } else { vm_deallocate(mach_task_self_, a, vm_size_t(h.size)) }
+            }
+        }
+        let got = jit26_prepare_region(nil, Int(size))
+        for (a, sz) in plugs { vm_deallocate(mach_task_self_, a, sz) }
+        guard let p = got, p != UnsafeMutableRawPointer(bitPattern: 0) else {
+            LogStore.shared.log("[pool-split] low: the debugger did not allocate \(size >> 20)MB", level: .error)
+            return nil
+        }
+        let b = vm_address_t(bitPattern: p)
+        if b < best.base || b + size > best.base + best.size {
+            let dkr = vm_deallocate(mach_task_self_, b, vm_size_t(size))
+            LogStore.shared.log(String(format: "[pool-split] low: the region landed at 0x%lx, not in the run at 0x%lx — "
+                + "released (kr=%d)", Int(b), Int(best.base), dkr), level: .error)
+            return nil
+        }
+        var held = 0
+        for g in freeRuns(b + size, aBase, minSize: 0x4000) {
+            var a = g.base
+            if vm_allocate(mach_task_self_, &a, vm_size_t(g.size), 0 /* VM_FLAGS_FIXED */) == KERN_SUCCESS {
+                if a == g.base {
+                    _ = vm_protect(mach_task_self_, a, vm_size_t(g.size), 1, VM_PROT_NONE)
+                    held += Int(g.size)
+                } else { vm_deallocate(mach_task_self_, a, vm_size_t(g.size)) }
+            }
+        }
+        LogStore.shared.log(String(format: "[pool-split] low debugger region 0x%lx+%luMB (free runs below the window: %@); "
+            + "between it and the pool: %luKB, %luKB of it free and now held PROT_NONE",
+            Int(b), Int(size >> 20), desc, Int(aBase - b - size) >> 10, held >> 10))
         return (b, size)
     }
 
