@@ -12408,6 +12408,29 @@ static int ios_sc_current_is_helper(void)
     return ios_sc_path_is_helper( pp->ImagePathName.Buffer, pp->ImagePathName.Length / sizeof(WCHAR) );
 }
 
+/* Is the calling pseudo-process ForzaWebHelper.exe (Forza Horizon 4's CEF
+ * children)? Same image-path test as ios_sc_current_is_helper. */
+static int ios_fh4_current_is_webhelper(void)
+{
+    static const char name[] = "forzawebhelper.exe";
+    PEB *peb = ios_jit_current_peb();
+    RTL_USER_PROCESS_PARAMETERS *pp = peb ? peb->ProcessParameters : NULL;
+    const WCHAR *path;
+    size_t len, base = 0, k, n = sizeof(name) - 1;
+
+    if (!pp || !(path = pp->ImagePathName.Buffer)) return 0;
+    len = pp->ImagePathName.Length / sizeof(WCHAR);
+    for (k = 0; k < len; k++) if (path[k] == '\\' || path[k] == '/') base = k + 1;
+    if (len - base != n) return 0;
+    for (k = 0; k < n; k++)
+    {
+        WCHAR c = path[base + k];
+        if (c >= 'A' && c <= 'Z') c += 32;
+        if (c != (WCHAR)name[k]) return 0;
+    }
+    return 1;
+}
+
 /* Does the calling pseudo-process have socialclub.dll mapped? The table is read
  * under the pool lock, the images' export names outside it (the caller holds
  * virtual_mutex, so none of this process's images can be unmapped meanwhile). */
@@ -24144,6 +24167,24 @@ NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR z
                  * holdback, the only aligned stretch left. See IOS_CAGE_BASE. */
                 if (st2 && ios_cage_holdback_live && *size_ptr == 0x200000000ULL)
                     st2 = ios_cage_grant( type, protect, *size_ptr, &pick, &sz, "ml433" );
+                /* Forza Horizon 4's CEF: each renderer asks 8 GB only to find a 4 GB
+                 * boundary for V8's 4 GB pointer cage, then frees it and reserves
+                 * the 4 GB there (jumbo#3/#4, 2026-10-11 22:27). The boot holdback
+                 * serves one renderer; the next one got nothing and wrote through
+                 * a NULL cage base (addr 0x3404, 2026-10-12 09:08). Give it a free
+                 * 4 GB-aligned 4 GB, reported as 8 GB: V8 rounds the base up to
+                 * itself, releases it and reserves the same 4 GB. */
+                if (st2 && *size_ptr == 0x200000000ULL && ios_fh4_current_is_webhelper())
+                {
+                    uintptr_t x;
+                    for (x = 0x7b00000000ULL; x >= 0x7000000000ULL && st2; x -= 0x100000000ULL)
+                        if (ios_jumbo_try_at( x, 0x100000000ULL, type, protect, &pick ))
+                        {
+                            sz = *size_ptr;
+                            st2 = 0;
+                            dprintf( 2, "[cage] fh4 renderer: 4GB-aligned 4GB at %p reported as 8GB\n", pick );
+                        }
+                }
                 /* ml434 (#72 layer 2): the 4GB ask is the cppgc caged heap and
                  * must come back 4GB-ALIGNED. By the time it arrives (~69s) the
                  * furniture window is 89% full (ml433: free=1701MB, maxhole
