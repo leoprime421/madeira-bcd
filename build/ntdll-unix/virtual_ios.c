@@ -17160,18 +17160,11 @@ static unsigned long long ios_swap_footprint_mb( void )
     return (unsigned long long)vmi.phys_footprint >> 20;
 }
 
-/* Replacement for decommit_pages in pinned virtual_ios.c.  The original
- * ios_pool_live_overlap helper is retained.  All helpers are inlined so the
- * native build can preserve the original function's bounds/unwind frame.
- * The heavy dc-census/decommit-zero logging is deliberately omitted: no raw
- * verification read is permitted after a temporary PROT_NONE page is restored.
- */
-/* madeira-bcd, build 229: decommit_pages is upstream's again. This version
- * returned STATUS_ACCESS_DENIED without zeroing whenever an edge page failed
- * its protection checks, and FEX's LookupCache clear (VirtualDontNeed, which
- * relies on decommit-as-bzero) then ran on stale entries: God of War stopped
- * right after such a decommit in the FEX arena on build 228. The helpers stay
- * for a later, upstream-compatible version of the partial-page fix. */
+/* Partial host pages must be cleared without faulting while virtual_mutex is
+ * held: the Mach exception server takes that same mutex. The old all-range
+ * protection gate rejected valid FEX clears; only a failed kernel write now
+ * enters the temporary-protection path. Writable FEX/alias clears keep their
+ * existing zero-on-decommit contract. */
 #define IOS_DC_INLINE static inline __attribute__((always_inline, unused))
 struct ios_dc_edge
 {
@@ -17250,6 +17243,53 @@ IOS_DC_INLINE int ios_dc_restore( struct ios_dc_edge *edge )
                          host_page_size, FALSE, edge->original ) != KERN_SUCCESS) return 0;
     if (!ios_dc_query( edge->page, &current, &maximum )) return 0;
     return current == edge->original && maximum == edge->maximum;
+}
+
+/* Kernel copies return an error for an inaccessible destination instead of
+ * suspending this thread in a Mach exception with virtual_mutex held. Keep
+ * each transfer smaller than a host page and preserve neighboring bytes. */
+IOS_DC_INLINE kern_return_t ios_dc_write_zero( char *base, size_t size )
+{
+    static const unsigned char zeros[4096];
+    while (size)
+    {
+        size_t n = size < sizeof(zeros) ? size : sizeof(zeros);
+        kern_return_t kr = mach_vm_write( mach_task_self(),
+                                         (mach_vm_address_t)(uintptr_t)base,
+                                         (vm_offset_t)(uintptr_t)zeros, n );
+        if (kr != KERN_SUCCESS) return kr;
+        base += n;
+        size -= n;
+    }
+    return KERN_SUCCESS;
+}
+
+IOS_DC_INLINE int ios_dc_zero_edge( char *base, size_t size )
+{
+    struct ios_dc_edge edge = {0};
+    kern_return_t kr;
+    int restored;
+    static unsigned int repaired, failed;
+
+    if (!size) return 1;
+    kr = ios_dc_write_zero( base, size );
+    if (kr == KERN_SUCCESS) return 1;
+    /* Do not apply the old alias/maximum-protection gate to writable pages.
+     * It is needed only before changing a protected host page's permissions. */
+    if (kr == KERN_PROTECTION_FAILURE && ios_dc_prepare( &edge, base, size ))
+        kr = ios_dc_write_zero( base, size );
+    restored = ios_dc_restore( &edge );
+    if (kr != KERN_SUCCESS || !restored)
+    {
+        if (++failed <= 8)
+            dprintf( 2, "[decommit-edge] FAILED base=%p size=0x%zx kr=%d restored=%d\n",
+                     base, size, kr, restored );
+        return 0;
+    }
+    if (++repaired <= 8)
+        dprintf( 2, "[decommit-edge] zeroed protected subpage base=%p size=0x%zx; protection restored=0x%x\n",
+                 base, size, edge.original );
+    return 1;
 }
 
 static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size )
@@ -17346,25 +17386,32 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
         else if (host_start < host_end)
         {
             ios_swap_release_range( host_start, host_end - host_start, 0 );   /* ml1077 */
-            anon_mmap_fixed( host_start, host_end - host_start, PROT_READ | PROT_WRITE, 0 );
+            if (anon_mmap_fixed( host_start, host_end - host_start,
+                                 PROT_READ | PROT_WRITE, 0 ) == MAP_FAILED)
+                return STATUS_NO_MEMORY;
             dc_branch = "mmap-over";
             dc_verify = host_start;
             dc_vsize  = host_end - host_start;
             /* Zero the guest sub-ranges on partial host pages the mmap-over
              * couldn't cover — FEX relies on decommit-as-bzero, and stale
              * LookupCache entries surviving at the edges would run wrong
-             * blocks. Edge pages belong to the same committed RW guest heap. */
-            if ((char *)base < host_start) memset( base, 0, host_start - (char *)base );
-            if (host_end < (char *)base + size) memset( host_end, 0, (char *)base + size - host_end );
+             * blocks. Chromium can protect these edges PAGE_NOACCESS before
+             * decommitting, so never touch them with a raw memset here. */
+            if ((char *)base < host_start &&
+                !ios_dc_zero_edge( base, host_start - (char *)base ))
+                return STATUS_ACCESS_DENIED;
+            if (host_end < (char *)base + size &&
+                !ios_dc_zero_edge( host_end, (char *)base + size - host_end ))
+                return STATUS_ACCESS_DENIED;
         }
         else
         {
             /* Range lies within a single host page — no full page to remap;
              * zero it in place to honour the decommit-as-bzero contract. */
-            memset( base, 0, size );
-            dc_branch = "subpage-memset";
-            dc_verify = base;
-            dc_vsize  = size;
+            if (!ios_dc_zero_edge( base, size )) return STATUS_ACCESS_DENIED;
+            dc_branch = "subpage-kernel-write";
+            /* The original protection is restored; a raw verification read
+             * here could cause the very same exception/mutex deadlock. */
         }
 
         /* iOS-Madeira ml293 (task #52): VERIFY THE DECOMMIT ZERO CONTRACT IN THE PA ARENAS.
@@ -17421,9 +17468,9 @@ static NTSTATUS decommit_pages( struct file_view *view, char *base, size_t size 
                                  b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7] );
                     }
                 }
-                else
+                else if (dc_n <= 8 || (dc_n % 4096) == 0)
                     dprintf( 2, "[decommit-zero] #%lu base=%p size=0x%lx branch=%s "
-                             "(no read-back: this branch does not zero)\n",
+                             "(no direct read-back)\n",
                              dc_n, base, (unsigned long)size, dc_branch );
             }
         }
