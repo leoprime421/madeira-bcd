@@ -16855,19 +16855,27 @@ void madeira_pool_set_pressure( int level )
     dprintf( 2, "[swap] ml1150 pool: memory pressure %s; pool %llu MB in use\n",
              level >= 2 ? "CRITICAL" : level ? "warning" : "normal", ios_pool_bytes >> 20 );
 }
+/* Pages the system can hand out without killing anyone: free plus the
+ * reclaimable kinds (inactive, speculative, purgeable). free_count alone sits
+ * under 1 GB on iOS almost all the time, because the kernel keeps RAM full of
+ * caches -- Mortal Shell 2 (2026-10-12 13:06) had the guard refuse the pool from
+ * its first take at 1.4 GB of footprint ("0 takes, 5 guarded") and was then
+ * killed by jetsam at 8 GB with 2 GB of pool unused. */
 static uint64_t ios_pool_system_free( void )
 {
     vm_statistics64_data_t vm;
     mach_msg_type_number_t count = HOST_VM_INFO64_COUNT;
     if (host_statistics64( mach_host_self(), HOST_VM_INFO64, (host_info64_t)&vm, &count ) != KERN_SUCCESS) return 0;
-    return (uint64_t)vm.free_count * vm_kernel_page_size;
+    return ((uint64_t)vm.free_count + vm.inactive_count + vm.speculative_count + vm.purgeable_count) * vm_kernel_page_size;
 }
 /* A pool offset for len bytes inside one region, or -1 (the guard, or no room). */
 static uint64_t ios_pool_take( size_t len )
 {
     unsigned i, best = ~0u, n = __atomic_load_n( &ios_pool_nreg, __ATOMIC_ACQUIRE );
     if (!n || len > ios_pool_region) return (uint64_t)-1;
-    if (__atomic_load_n( &ios_pool_pressure, __ATOMIC_RELAXED ) || ios_pool_system_free() < ios_pool_margin)
+    /* Only CRITICAL pressure stops it: a warning is exactly when moving guest data
+     * off our footprint helps, and the margin check still guards the system. */
+    if (__atomic_load_n( &ios_pool_pressure, __ATOMIC_RELAXED ) >= 2 || ios_pool_system_free() < ios_pool_margin)
     {
         ios_pool_guarded++;
         return (uint64_t)-1;
