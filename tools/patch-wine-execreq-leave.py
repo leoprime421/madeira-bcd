@@ -3,12 +3,18 @@
 
 1. Fix Wine's ARM64EC NtProtectVirtualMemory executable-request early return.
 2. Force FH4's Xbox realtime endpoint offline inside WinHTTP, before DNS/TLS.
+3. Backport Wine's VKD3D-backed D3DReflect and rebuild ARM64EC D3DCompiler.
 
 The FH4 gate is deliberately narrow: it only applies when the current Windows
 image basename is ForzaHorizon4.exe and the WinHttpConnect hostname is exactly
 rta.xboxlive.com. Other Xbox/Microsoft traffic and other titles are untouched.
+
+The D3DReflect backport follows upstream Wine commit
+815fe9deb15b2cc742a243166316a1d33c6a03e0. It replaces the old reflection
+parser hit by Ace Combat 7's TrueSky plugin instead of masking the final AV.
 """
 from pathlib import Path
+import subprocess
 import sys
 
 # ---------------------------------------------------------------------------
@@ -102,3 +108,15 @@ else:
 """
     winhttp_path.write_text(winhttp.replace(anchor, gate, 1), encoding="utf-8")
     print("FH4 RTA offline: patched", winhttp_path)
+
+# ---------------------------------------------------------------------------
+# Ace Combat 7 / TrueSky D3DReflect backport.
+#
+# Build 170 reaches TrueSky's D3DReflect call, then the pinned Wine parser emits
+# a large burst of shader-reflection partial stubs before native formatting
+# faults while the guest is still inside TrueSky. Wine upstream replaced that
+# parser with the VKD3D reflection implementation. Apply the exact backport and
+# rebuild the ARM64EC DLLs now; build-arm64ec is restored before this CI step.
+# ---------------------------------------------------------------------------
+helper = Path(__file__).with_name("patch-build-wine-d3dreflect-vkd3d.py")
+subprocess.run([sys.executable, str(helper)], check=True)
