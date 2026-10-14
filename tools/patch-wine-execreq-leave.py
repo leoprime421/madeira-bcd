@@ -4,6 +4,7 @@
 1. Fix Wine's ARM64EC NtProtectVirtualMemory executable-request early return.
 2. Force FH4's Xbox realtime endpoint offline inside WinHTTP, before DNS/TLS.
 3. Backport Wine's VKD3D-backed D3DReflect and rebuild ARM64EC D3DCompiler.
+4. Rebuild title-scoped Ace Combat 7 DirectInput controller/keyboard support.
 
 The FH4 gate is deliberately narrow: it only applies when the current Windows
 image basename is ForzaHorizon4.exe and the WinHttpConnect hostname is exactly
@@ -59,12 +60,6 @@ else:
 
 # ---------------------------------------------------------------------------
 # FH4 Xbox RTA offline gate.
-#
-# The modified/offline FH4 build uses a local Xbox/Goldberg identity, but the
-# title still opens real WinHTTP realtime connections to rta.xboxlive.com.
-# Those requests reach Microsoft's websocket upgrade path and can leave the
-# game waiting indefinitely at Continue. Do not forge a successful Xbox auth
-# response; make only this realtime endpoint deterministically unavailable.
 # ---------------------------------------------------------------------------
 winhttp_path = Path("wine/dlls/winhttp/session.c")
 winhttp = winhttp_path.read_text(encoding="utf-8")
@@ -112,16 +107,6 @@ else:
 
 # ---------------------------------------------------------------------------
 # Ace Combat 7 / TrueSky D3DReflect backport.
-#
-# Build 170 reaches TrueSky's D3DReflect call, then the pinned Wine parser emits
-# a large burst of shader-reflection partial stubs before native formatting
-# faults while the guest is still inside TrueSky. Wine upstream replaced that
-# parser with the VKD3D reflection implementation. Apply the exact backport and
-# rebuild the ARM64EC DLLs now; build-arm64ec is restored before this CI step.
-#
-# This step runs after the earlier shell that exports llvm-mingw has ended, so
-# never rely on the job's ambient PATH. Build 171 proved that the toolchain was
-# present in the checkout but arm64ec-w64-mingw32-clang was invisible here.
 # ---------------------------------------------------------------------------
 helper = Path(__file__).with_name("patch-build-wine-d3dreflect-vkd3d.py")
 root = Path(__file__).resolve().parents[1]
@@ -132,3 +117,15 @@ if not (mingw_bin / "arm64ec-w64-mingw32-clang").exists():
 env["PATH"] = f"{mingw_bin}:{env.get('PATH', '')}"
 print(f"ace7 d3dreflect: llvm-mingw PATH={mingw_bin}")
 subprocess.run([sys.executable, str(helper)], check=True, env=env)
+
+# ---------------------------------------------------------------------------
+# Ace Combat 7 DirectInput input bridge.
+#
+# Build 172 proves the frontend sees keyboard events and enables the physical
+# XInput source, while Wine's iOS DirectInput joystick remains intentionally
+# hidden and the title cannot consume the keyboard through its DInput/RawInput
+# path. Patch only dinput.dll, and only change behavior when
+# MADEIRA_INITIAL_CWD identifies ACE COMBAT 7.
+# ---------------------------------------------------------------------------
+input_helper = Path(__file__).with_name("patch-build-wine-ace7-input.py")
+subprocess.run([sys.executable, str(input_helper)], check=True, env=env)
