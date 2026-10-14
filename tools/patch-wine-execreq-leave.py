@@ -14,6 +14,7 @@ The D3DReflect backport follows upstream Wine commit
 parser hit by Ace Combat 7's TrueSky plugin instead of masking the final AV.
 """
 from pathlib import Path
+import os
 import subprocess
 import sys
 
@@ -117,6 +118,17 @@ else:
 # faults while the guest is still inside TrueSky. Wine upstream replaced that
 # parser with the VKD3D reflection implementation. Apply the exact backport and
 # rebuild the ARM64EC DLLs now; build-arm64ec is restored before this CI step.
+#
+# This step runs after the earlier shell that exports llvm-mingw has ended, so
+# never rely on the job's ambient PATH. Build 171 proved that the toolchain was
+# present in the checkout but arm64ec-w64-mingw32-clang was invisible here.
 # ---------------------------------------------------------------------------
 helper = Path(__file__).with_name("patch-build-wine-d3dreflect-vkd3d.py")
-subprocess.run([sys.executable, str(helper)], check=True)
+root = Path(__file__).resolve().parents[1]
+mingw_bin = root / "toolchains/llvm-mingw-20260421-ucrt-macos-universal/bin"
+env = os.environ.copy()
+if not (mingw_bin / "arm64ec-w64-mingw32-clang").exists():
+    raise SystemExit(f"ace7 d3dreflect: llvm-mingw compiler missing: {mingw_bin}")
+env["PATH"] = f"{mingw_bin}:{env.get('PATH', '')}"
+print(f"ace7 d3dreflect: llvm-mingw PATH={mingw_bin}")
+subprocess.run([sys.executable, str(helper)], check=True, env=env)
